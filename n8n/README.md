@@ -80,28 +80,30 @@
 
 ## Установка
 
-### 1. Переменные окружения
+### 1. Конфигурация (через Config ноду в каждом workflow)
 
-Добавьте в n8n (Settings → Environment Variables):
+> **Важно:** n8n Cloud не поддерживает Environment Variables без Enterprise плана.
+> Все настройки хранятся в **Config** ноде в начале каждого workflow.
 
-```env
-BYBIT_API_KEY=your_api_key
-BYBIT_API_SECRET=your_api_secret
-BYBIT_TESTNET=true
+После импорта каждого workflow откройте ноду **"Config"** и замените placeholder-значения (`YOUR_...`) на реальные:
 
-OPENROUTER_API_KEY=your_openrouter_api_key
-OPENROUTER_MODEL=anthropic/claude-sonnet-4-20250514
-
-TELEGRAM_BOT_TOKEN=your_bot_token
-TELEGRAM_CHAT_ID=your_chat_id
-
-MAX_RISK_PER_TRADE=1
-MAX_DAILY_LOSS=3
-MAX_OPEN_POSITIONS=3
-MIN_RISK_REWARD=3
-MIN_CONFIDENCE=75
-MIN_VOLUME_24H=50000000
 ```
+BYBIT_API_KEY — ваш API ключ Bybit
+BYBIT_API_SECRET — ваш API секрет Bybit
+BYBIT_TESTNET — 'true' для тестнета, 'false' для mainnet
+OPENROUTER_API_KEY — ваш ключ OpenRouter
+OPENROUTER_MODEL — anthropic/claude-sonnet-4-20250514
+TELEGRAM_CHAT_ID — ваш chat ID в Telegram
+MAX_RISK_PER_TRADE — 1 (процент риска на сделку)
+MAX_DAILY_LOSS — 3 (макс. дневные потери в %)
+MAX_OPEN_POSITIONS — 3
+MIN_RISK_REWARD — 3
+MIN_CONFIDENCE — 75
+MIN_VOLUME_24H — 50000000
+WEBHOOK_URL — URL вашего n8n (например https://your-n8n.beget.app/)
+```
+
+После первого запуска значения сохраняются автоматически — повторно вводить не нужно.
 
 ### 2. Bybit API ключи
 
@@ -146,7 +148,7 @@ MIN_VOLUME_24H=50000000
 - **Telegram API** → Bot Token
 - Env vars добавьте через Settings → Environment Variables
 
-API-ключи Bybit и OpenRouter передаются через env-переменные (не через n8n credentials), так как используются в Code-нодах через `$env`.
+API-ключи Bybit и OpenRouter хранятся в Config-ноде каждого workflow (через `$getWorkflowStaticData`). Telegram Bot Token — в n8n Credentials.
 
 ## Чек-лист: запуск на тестнете
 
@@ -202,6 +204,7 @@ n8n/
 │   ├── bybit-helpers.js            # Утилиты для Bybit API
 │   └── claude-prompts.js           # Системные промты для Claude
 └── workflows/
+    ├── 00-config-setup.json        # Настройка конфигурации (запустить первым)
     ├── 01-market-scanner.json      # Сканер рынка
     ├── 02-trade-executor.json      # Исполнение ордеров
     ├── 03-position-manager.json    # Управление позициями

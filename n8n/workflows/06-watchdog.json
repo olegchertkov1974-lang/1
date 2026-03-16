@@ -15,13 +15,23 @@
     },
     {
       "parameters": {
-        "jsCode": "// =============================================\n// Watchdog: verify all workflows are running\n// and system is healthy\n// =============================================\n\nconst checks = [];\n\n// 1. Check Bybit API connectivity\ntry {\n  const isTestnet = ($env.BYBIT_TESTNET || 'true').toLowerCase() === 'true';\n  const baseUrl = isTestnet ? 'https://api-testnet.bybit.com' : 'https://api.bybit.com';\n  const resp = await this.helpers.httpRequest({\n    method: 'GET',\n    url: `${baseUrl}/v5/market/time`\n  });\n  checks.push({\n    name: 'Bybit API',\n    status: resp.retCode === 0 ? 'OK' : 'ERROR',\n    detail: resp.retCode === 0 ? 'Connected' : resp.retMsg\n  });\n} catch(e) {\n  checks.push({ name: 'Bybit API', status: 'DOWN', detail: e.message });\n}\n\n// 2. Check OpenRouter API connectivity (Claude via OpenRouter)\ntry {\n  const resp = await this.helpers.httpRequest({\n    method: 'POST',\n    url: 'https://openrouter.ai/api/v1/chat/completions',\n    headers: {\n      'Authorization': `Bearer ${$env.OPENROUTER_API_KEY}`,\n      'Content-Type': 'application/json'\n    },\n    body: {\n      model: $env.OPENROUTER_MODEL || 'anthropic/claude-sonnet-4-20250514',\n      max_tokens: 10,\n      messages: [{ role: 'user', content: 'ping' }]\n    }\n  });\n  checks.push({\n    name: 'OpenRouter (Claude)',\n    status: resp.choices ? 'OK' : 'ERROR',\n    detail: 'Connected'\n  });\n} catch(e) {\n  checks.push({ name: 'OpenRouter (Claude)', status: 'DOWN', detail: e.message });\n}\n\n// 3. Check environment variables\nconst requiredEnvs = [\n  'BYBIT_API_KEY', 'BYBIT_API_SECRET', 'OPENROUTER_API_KEY',\n  'TELEGRAM_BOT_TOKEN', 'TELEGRAM_CHAT_ID'\n];\nconst missingEnvs = requiredEnvs.filter(e => !$env[e]);\nchecks.push({\n  name: 'Environment',\n  status: missingEnvs.length === 0 ? 'OK' : 'WARNING',\n  detail: missingEnvs.length === 0 ? 'All set' : `Missing: ${missingEnvs.join(', ')}`\n});\n\n// 4. Check bot stopped flag\nconst store = $getWorkflowStaticData('global');\nchecks.push({\n  name: 'Bot Status',\n  status: store.botStopped ? 'STOPPED' : 'RUNNING',\n  detail: store.botStopped ? `Stopped at ${new Date(store.stoppedAt).toLocaleString('ru-RU')}` : 'Active'\n});\n\n// Determine overall health\nconst hasErrors = checks.some(c => c.status === 'DOWN' || c.status === 'ERROR');\nconst hasWarnings = checks.some(c => c.status === 'WARNING' || c.status === 'STOPPED');\n\nreturn [{\n  json: {\n    checks,\n    healthy: !hasErrors,\n    hasWarnings,\n    needsAlert: hasErrors\n  }\n}];"
+        "jsCode": "const cfg = $getWorkflowStaticData('global');\nif (!cfg._initialized) {\n  cfg.BYBIT_API_KEY = 'YOUR_BYBIT_API_KEY';\n  cfg.BYBIT_API_SECRET = 'YOUR_BYBIT_API_SECRET';\n  cfg.BYBIT_TESTNET = 'true';\n  cfg.OPENROUTER_API_KEY = 'YOUR_OPENROUTER_API_KEY';\n  cfg.OPENROUTER_MODEL = 'anthropic/claude-sonnet-4-20250514';\n  cfg.TELEGRAM_CHAT_ID = 'YOUR_TELEGRAM_CHAT_ID';\n  cfg.TELEGRAM_BOT_TOKEN = 'YOUR_TELEGRAM_BOT_TOKEN';\n  cfg._initialized = true;\n}\nreturn [{ json: { status: 'ok' } }];"
+      },
+      "id": "config",
+      "name": "Config",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [320, 400]
+    },
+    {
+      "parameters": {
+        "jsCode": "// =============================================\n// Watchdog: verify all workflows are running\n// and system is healthy\n// =============================================\n\nconst cfg = $getWorkflowStaticData('global');\n\nconst checks = [];\n\n// 1. Check Bybit API connectivity\ntry {\n  const isTestnet = (cfg.BYBIT_TESTNET || 'true').toLowerCase() === 'true';\n  const baseUrl = isTestnet ? 'https://api-testnet.bybit.com' : 'https://api.bybit.com';\n  const resp = await this.helpers.httpRequest({\n    method: 'GET',\n    url: `${baseUrl}/v5/market/time`\n  });\n  checks.push({\n    name: 'Bybit API',\n    status: resp.retCode === 0 ? 'OK' : 'ERROR',\n    detail: resp.retCode === 0 ? 'Connected' : resp.retMsg\n  });\n} catch(e) {\n  checks.push({ name: 'Bybit API', status: 'DOWN', detail: e.message });\n}\n\n// 2. Check OpenRouter API connectivity (Claude via OpenRouter)\ntry {\n  const resp = await this.helpers.httpRequest({\n    method: 'POST',\n    url: 'https://openrouter.ai/api/v1/chat/completions',\n    headers: {\n      'Authorization': `Bearer ${cfg.OPENROUTER_API_KEY}`,\n      'Content-Type': 'application/json'\n    },\n    body: {\n      model: cfg.OPENROUTER_MODEL || 'anthropic/claude-sonnet-4-20250514',\n      max_tokens: 10,\n      messages: [{ role: 'user', content: 'ping' }]\n    }\n  });\n  checks.push({\n    name: 'OpenRouter (Claude)',\n    status: resp.choices ? 'OK' : 'ERROR',\n    detail: 'Connected'\n  });\n} catch(e) {\n  checks.push({ name: 'OpenRouter (Claude)', status: 'DOWN', detail: e.message });\n}\n\n// 3. Check config keys\nconst requiredKeys = ['BYBIT_API_KEY', 'BYBIT_API_SECRET', 'OPENROUTER_API_KEY', 'TELEGRAM_CHAT_ID'];\nconst missingKeys = requiredKeys.filter(k => !cfg[k] || cfg[k].startsWith('YOUR_'));\nchecks.push({\n  name: 'Config',\n  status: missingKeys.length === 0 ? 'OK' : 'WARNING',\n  detail: missingKeys.length === 0 ? 'All set' : `Missing: ${missingKeys.join(', ')}`\n});\n\n// 4. Check bot stopped flag\nconst store = $getWorkflowStaticData('global');\nchecks.push({\n  name: 'Bot Status',\n  status: store.botStopped ? 'STOPPED' : 'RUNNING',\n  detail: store.botStopped ? `Stopped at ${new Date(store.stoppedAt).toLocaleString('ru-RU')}` : 'Active'\n});\n\n// Determine overall health\nconst hasErrors = checks.some(c => c.status === 'DOWN' || c.status === 'ERROR');\nconst hasWarnings = checks.some(c => c.status === 'WARNING' || c.status === 'STOPPED');\n\nreturn [{\n  json: {\n    checks,\n    healthy: !hasErrors,\n    hasWarnings,\n    needsAlert: hasErrors\n  }\n}];"
       },
       "id": "health-check",
       "name": "System Health Check",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [440, 400]
+      "position": [540, 400]
     },
     {
       "parameters": {
@@ -40,22 +50,22 @@
       "name": "System Unhealthy?",
       "type": "n8n-nodes-base.filter",
       "typeVersion": 2,
-      "position": [680, 400]
+      "position": [780, 400]
     },
     {
       "parameters": {
-        "jsCode": "const data = $input.first().json;\n\nlet msg = '⚠️ <b>Watchdog Alert</b>\\n\\n';\n\nfor (const check of data.checks) {\n  const emoji = {\n    'OK': '✅', 'ERROR': '❌', 'DOWN': '🔴',\n    'WARNING': '⚠️', 'STOPPED': '⛔', 'RUNNING': '🟢'\n  }[check.status] || '❓';\n  \n  msg += `${emoji} <b>${check.name}:</b> ${check.status}\\n`;\n  msg += `   ${check.detail}\\n\\n`;\n}\n\nif (!data.healthy) {\n  msg += '\\n🚨 <b>ВНИМАНИЕ: Система работает с ошибками!</b>\\n';\n  msg += 'Торговля приостановлена до устранения проблем.\\n';\n}\n\nmsg += `\\n⏱ ${new Date().toLocaleString('ru-RU', { timeZone: 'Europe/Moscow' })}`;\n\nreturn [{ json: { message: msg } }];"
+        "jsCode": "const cfg = $getWorkflowStaticData('global');\n\nconst data = $input.first().json;\n\nlet msg = '⚠️ <b>Watchdog Alert</b>\\n\\n';\n\nfor (const check of data.checks) {\n  const emoji = {\n    'OK': '✅', 'ERROR': '❌', 'DOWN': '🔴',\n    'WARNING': '⚠️', 'STOPPED': '⛔', 'RUNNING': '🟢'\n  }[check.status] || '❓';\n  \n  msg += `${emoji} <b>${check.name}:</b> ${check.status}\\n`;\n  msg += `   ${check.detail}\\n\\n`;\n}\n\nif (!data.healthy) {\n  msg += '\\n🚨 <b>ВНИМАНИЕ: Система работает с ошибками!</b>\\n';\n  msg += 'Торговля приостановлена до устранения проблем.\\n';\n}\n\nmsg += `\\n⏱ ${new Date().toLocaleString('ru-RU', { timeZone: 'Europe/Moscow' })}`;\n\nreturn [{ json: { message: msg } }];"
       },
       "id": "format-alert",
       "name": "Format Watchdog Alert",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [920, 400]
+      "position": [1020, 400]
     },
     {
       "parameters": {
         "operation": "sendMessage",
-        "chatId": "={{ $env.TELEGRAM_CHAT_ID }}",
+        "chatId": "={{ $getWorkflowStaticData('global').TELEGRAM_CHAT_ID }}",
         "text": "={{ $json.message }}",
         "additionalFields": { "parse_mode": "HTML" }
       },
@@ -63,7 +73,7 @@
       "name": "TG: Watchdog Alert",
       "type": "n8n-nodes-base.telegram",
       "typeVersion": 1.2,
-      "position": [1160, 400],
+      "position": [1260, 400],
       "credentials": {
         "telegramApi": { "id": "TELEGRAM_CREDENTIALS_ID", "name": "Telegram Bot" }
       }
@@ -71,6 +81,9 @@
   ],
   "connections": {
     "Every 10 Minutes": {
+      "main": [[ { "node": "Config", "type": "main", "index": 0 } ]]
+    },
+    "Config": {
       "main": [[ { "node": "System Health Check", "type": "main", "index": 0 } ]]
     },
     "System Health Check": {
