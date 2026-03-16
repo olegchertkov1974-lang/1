@@ -19,7 +19,8 @@
 │       (по команде)                       (каждые 10 мин)    │
 └──────────┬──────────┬───────────┬──────────┬────────────────┘
            │          │           │          │
-     Claude API   Bybit API   Telegram   Monitoring
+   OpenRouter    Bybit API   Telegram   Monitoring
+   (Claude AI)
 ```
 
 ## Воркфлоу
@@ -70,7 +71,7 @@
 ### WF6 — Watchdog (`06-watchdog.json`)
 - Запуск каждые 10 минут
 - Проверяет доступность Bybit API
-- Проверяет доступность Claude API
+- Проверяет доступность OpenRouter (Claude)
 - Проверяет env-переменные
 - Алерт в Telegram при проблемах
 
@@ -85,7 +86,8 @@ BYBIT_API_KEY=your_api_key
 BYBIT_API_SECRET=your_api_secret
 BYBIT_TESTNET=true
 
-ANTHROPIC_API_KEY=your_claude_api_key
+OPENROUTER_API_KEY=your_openrouter_api_key
+OPENROUTER_MODEL=anthropic/claude-sonnet-4-20250514
 
 TELEGRAM_BOT_TOKEN=your_bot_token
 TELEGRAM_CHAT_ID=your_chat_id
@@ -118,11 +120,14 @@ MIN_VOLUME_24H=50000000
    - Откройте `https://api.telegram.org/bot<TOKEN>/getUpdates`
    - Найдите `"chat":{"id":123456789}`
 
-### 4. Claude API ключ
+### 4. OpenRouter API ключ (Claude через OpenRouter)
 
-1. Зарегистрируйтесь на [console.anthropic.com](https://console.anthropic.com)
-2. **API Keys → Create Key**
+1. Зарегистрируйтесь на [openrouter.ai](https://openrouter.ai)
+2. **Keys → Create Key**
 3. Сохраните ключ
+4. Убедитесь, что на балансе OpenRouter есть средства
+5. Модель по умолчанию: `anthropic/claude-sonnet-4-20250514`
+6. Можно сменить модель через `OPENROUTER_MODEL` env-переменную
 
 ### 5. Импорт воркфлоу
 
@@ -138,14 +143,14 @@ MIN_VOLUME_24H=50000000
 - **Telegram API** → Bot Token
 - Env vars добавьте через Settings → Environment Variables
 
-API-ключи Bybit и Claude передаются через env-переменные (не через n8n credentials), так как используются в Code-нодах через `$env`.
+API-ключи Bybit и OpenRouter передаются через env-переменные (не через n8n credentials), так как используются в Code-нодах через `$env`.
 
 ## Чек-лист: запуск на тестнете
 
 - [ ] `BYBIT_TESTNET=true` в env
 - [ ] API ключи от testnet.bybit.com
 - [ ] Telegram бот создан и работает (`/help` отвечает)
-- [ ] Claude API ключ валидный (Watchdog показывает OK)
+- [ ] OpenRouter API ключ валидный (Watchdog показывает OK)
 - [ ] Импортированы все 6 воркфлоу
 - [ ] Telegram credentials обновлены во всех воркфлоу
 - [ ] WEBHOOK_URL указывает на ваш n8n сервер
@@ -181,7 +186,7 @@ API-ключи Bybit и Claude передаются через env-переме�
 - `BYBIT_TESTNET=true` по умолчанию
 - Risk Guardian автоматически останавливает при потерях > 3%
 - Watchdog мониторит здоровье всех систем
-- Если Claude API недоступен — бот НЕ торгует
+- Если OpenRouter/Claude недоступен — бот НЕ торгует
 
 ## Структура файлов
 
