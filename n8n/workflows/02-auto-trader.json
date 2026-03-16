@@ -1,0 +1,195 @@
+{
+  "name": "Bybit Auto Trader (DCA Strategy)",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "hours",
+              "hoursInterval": 4
+            }
+          ]
+        }
+      },
+      "id": "schedule-trigger",
+      "name": "Every 4 Hours",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [200, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "// ==========================================\n// DCA (Dollar Cost Averaging) CONFIGURATION\n// ==========================================\n// Edit these settings to match your strategy\n\nconst CONFIG = {\n  // Trading pair\n  symbol: 'BTCUSDT',\n  \n  // Amount in USDT per buy order\n  orderAmountUSDT: 50,\n  \n  // Only buy if price dropped more than X% from last buy\n  dipThreshold: 2.0,\n  \n  // Take profit percentage\n  takeProfitPct: 5.0,\n  \n  // Stop loss percentage (0 = disabled)\n  stopLossPct: 10.0,\n  \n  // Max total investment in USDT (safety limit)\n  maxTotalInvestment: 1000,\n  \n  // Use testnet (SET TO true FOR TESTING!)\n  useTestnet: true,\n  \n  // Order type: 'Market' or 'Limit'\n  orderType: 'Market'\n};\n\nreturn [{ json: CONFIG }];"
+      },
+      "id": "config",
+      "name": "Strategy Config",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [420, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "const config = $input.first().json;\nconst baseUrl = config.useTestnet \n  ? 'https://api-testnet.bybit.com' \n  : 'https://api.bybit.com';\n\n// Get current price\nconst tickerResponse = await this.helpers.httpRequest({\n  method: 'GET',\n  url: `${baseUrl}/v5/market/tickers?category=spot&symbol=${config.symbol}`,\n});\n\nconst currentPrice = parseFloat(tickerResponse.result.list[0].lastPrice);\n\n// Get wallet balance\nconst timestamp = Date.now().toString();\nconst apiKey = $env.BYBIT_API_KEY;\nconst apiSecret = $env.BYBIT_API_SECRET;\n\n// HMAC signature for Bybit V5 API\nconst crypto = require('crypto');\nconst recvWindow = '5000';\nconst queryString = `accountType=UNIFIED`;\nconst preSign = timestamp + apiKey + recvWindow + queryString;\nconst signature = crypto.createHmac('sha256', apiSecret).update(preSign).digest('hex');\n\nconst balanceResponse = await this.helpers.httpRequest({\n  method: 'GET',\n  url: `${baseUrl}/v5/account/wallet-balance?accountType=UNIFIED`,\n  headers: {\n    'X-BAPI-API-KEY': apiKey,\n    'X-BAPI-SIGN': signature,\n    'X-BAPI-TIMESTAMP': timestamp,\n    'X-BAPI-RECV-WINDOW': recvWindow,\n    'Content-Type': 'application/json'\n  }\n});\n\nlet usdtBalance = 0;\ntry {\n  const coins = balanceResponse.result.list[0].coin;\n  const usdt = coins.find(c => c.coin === 'USDT');\n  usdtBalance = usdt ? parseFloat(usdt.walletBalance) : 0;\n} catch(e) {\n  usdtBalance = 0;\n}\n\n// Get stored state\nconst store = $getWorkflowStaticData('global');\nif (!store.lastBuyPrice) store.lastBuyPrice = 0;\nif (!store.totalInvested) store.totalInvested = 0;\nif (!store.avgBuyPrice) store.avgBuyPrice = 0;\nif (!store.totalQuantity) store.totalQuantity = 0;\n\nreturn [{\n  json: {\n    ...config,\n    currentPrice,\n    usdtBalance,\n    lastBuyPrice: store.lastBuyPrice,\n    totalInvested: store.totalInvested,\n    avgBuyPrice: store.avgBuyPrice,\n    totalQuantity: store.totalQuantity,\n    baseUrl\n  }\n}];"
+      },
+      "id": "fetch-data",
+      "name": "Fetch Market Data & Balance",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [640, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "const data = $input.first().json;\nconst store = $getWorkflowStaticData('global');\n\nlet action = 'HOLD';\nlet reason = '';\n\nconst { currentPrice, lastBuyPrice, totalInvested, avgBuyPrice, totalQuantity,\n        orderAmountUSDT, dipThreshold, takeProfitPct, stopLossPct, \n        maxTotalInvestment, usdtBalance } = data;\n\n// Check take profit\nif (avgBuyPrice > 0 && totalQuantity > 0) {\n  const profitPct = ((currentPrice - avgBuyPrice) / avgBuyPrice) * 100;\n  \n  if (profitPct >= takeProfitPct) {\n    action = 'SELL';\n    reason = `Take profit: ${profitPct.toFixed(2)}% (target: ${takeProfitPct}%)`;\n  }\n  \n  if (stopLossPct > 0 && profitPct <= -stopLossPct) {\n    action = 'SELL';\n    reason = `Stop loss: ${profitPct.toFixed(2)}% (limit: -${stopLossPct}%)`;\n  }\n}\n\n// Check DCA buy condition\nif (action === 'HOLD') {\n  const dipFromLast = lastBuyPrice > 0 \n    ? ((lastBuyPrice - currentPrice) / lastBuyPrice) * 100 \n    : dipThreshold + 1; // First buy always triggers\n  \n  if (dipFromLast >= dipThreshold) {\n    if (totalInvested + orderAmountUSDT <= maxTotalInvestment) {\n      if (usdtBalance >= orderAmountUSDT) {\n        action = 'BUY';\n        reason = `DCA buy: price dropped ${dipFromLast.toFixed(2)}% from last buy`;\n      } else {\n        reason = `Insufficient balance: ${usdtBalance.toFixed(2)} USDT`;\n      }\n    } else {\n      reason = `Max investment reached: ${totalInvested.toFixed(2)}/${maxTotalInvestment} USDT`;\n    }\n  } else {\n    reason = `Price drop ${dipFromLast.toFixed(2)}% < threshold ${dipThreshold}%`;\n  }\n}\n\nreturn [{\n  json: {\n    ...data,\n    action,\n    reason\n  }\n}];"
+      },
+      "id": "decide-action",
+      "name": "Decide: Buy/Sell/Hold",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [860, 300]
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict" },
+                "conditions": [{ "leftValue": "={{ $json.action }}", "rightValue": "BUY", "operator": { "type": "string", "operation": "equals" } }],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputLabel": "BUY"
+            },
+            {
+              "conditions": {
+                "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict" },
+                "conditions": [{ "leftValue": "={{ $json.action }}", "rightValue": "SELL", "operator": { "type": "string", "operation": "equals" } }],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputLabel": "SELL"
+            },
+            {
+              "conditions": {
+                "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict" },
+                "conditions": [{ "leftValue": "={{ $json.action }}", "rightValue": "HOLD", "operator": { "type": "string", "operation": "equals" } }],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputLabel": "HOLD"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "switch-action",
+      "name": "Route Action",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.2,
+      "position": [1080, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "const data = $input.first().json;\nconst crypto = require('crypto');\n\nconst apiKey = $env.BYBIT_API_KEY;\nconst apiSecret = $env.BYBIT_API_SECRET;\nconst timestamp = Date.now().toString();\nconst recvWindow = '5000';\n\n// Calculate quantity\nconst qty = (data.orderAmountUSDT / data.currentPrice).toFixed(6);\n\nconst orderPayload = {\n  category: 'spot',\n  symbol: data.symbol,\n  side: 'Buy',\n  orderType: data.orderType,\n  qty: data.orderType === 'Market' ? data.orderAmountUSDT.toString() : qty,\n  marketUnit: data.orderType === 'Market' ? 'quoteCoin' : undefined\n};\n\nconst bodyStr = JSON.stringify(orderPayload);\nconst preSign = timestamp + apiKey + recvWindow + bodyStr;\nconst signature = crypto.createHmac('sha256', apiSecret).update(preSign).digest('hex');\n\nconst response = await this.helpers.httpRequest({\n  method: 'POST',\n  url: `${data.baseUrl}/v5/order/create`,\n  headers: {\n    'X-BAPI-API-KEY': apiKey,\n    'X-BAPI-SIGN': signature,\n    'X-BAPI-TIMESTAMP': timestamp,\n    'X-BAPI-RECV-WINDOW': recvWindow,\n    'Content-Type': 'application/json'\n  },\n  body: orderPayload\n});\n\n// Update stored state\nconst store = $getWorkflowStaticData('global');\nconst buyQty = parseFloat(qty);\nconst buyAmount = data.orderAmountUSDT;\n\nstore.totalQuantity = (store.totalQuantity || 0) + buyQty;\nstore.totalInvested = (store.totalInvested || 0) + buyAmount;\nstore.avgBuyPrice = store.totalInvested / store.totalQuantity;\nstore.lastBuyPrice = data.currentPrice;\n\nreturn [{\n  json: {\n    action: 'BUY',\n    symbol: data.symbol,\n    price: data.currentPrice,\n    qty: qty,\n    amountUSDT: buyAmount,\n    orderId: response.result?.orderId || 'N/A',\n    retCode: response.retCode,\n    retMsg: response.retMsg,\n    totalInvested: store.totalInvested,\n    avgPrice: store.avgBuyPrice,\n    reason: data.reason\n  }\n}];"
+      },
+      "id": "execute-buy",
+      "name": "Execute BUY Order",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1300, 180]
+    },
+    {
+      "parameters": {
+        "jsCode": "const data = $input.first().json;\nconst crypto = require('crypto');\n\nconst apiKey = $env.BYBIT_API_KEY;\nconst apiSecret = $env.BYBIT_API_SECRET;\nconst timestamp = Date.now().toString();\nconst recvWindow = '5000';\n\nconst store = $getWorkflowStaticData('global');\nconst sellQty = (store.totalQuantity || 0).toFixed(6);\n\nconst orderPayload = {\n  category: 'spot',\n  symbol: data.symbol,\n  side: 'Sell',\n  orderType: 'Market',\n  qty: sellQty\n};\n\nconst bodyStr = JSON.stringify(orderPayload);\nconst preSign = timestamp + apiKey + recvWindow + bodyStr;\nconst signature = crypto.createHmac('sha256', apiSecret).update(preSign).digest('hex');\n\nconst response = await this.helpers.httpRequest({\n  method: 'POST',\n  url: `${data.baseUrl}/v5/order/create`,\n  headers: {\n    'X-BAPI-API-KEY': apiKey,\n    'X-BAPI-SIGN': signature,\n    'X-BAPI-TIMESTAMP': timestamp,\n    'X-BAPI-RECV-WINDOW': recvWindow,\n    'Content-Type': 'application/json'\n  },\n  body: orderPayload\n});\n\n// Calculate P&L\nconst pnl = (data.currentPrice * parseFloat(sellQty)) - (store.totalInvested || 0);\nconst pnlPct = store.avgBuyPrice > 0 \n  ? ((data.currentPrice - store.avgBuyPrice) / store.avgBuyPrice * 100).toFixed(2)\n  : 0;\n\n// Reset state\nstore.totalQuantity = 0;\nstore.totalInvested = 0;\nstore.avgBuyPrice = 0;\nstore.lastBuyPrice = 0;\n\nreturn [{\n  json: {\n    action: 'SELL',\n    symbol: data.symbol,\n    price: data.currentPrice,\n    qty: sellQty,\n    orderId: response.result?.orderId || 'N/A',\n    retCode: response.retCode,\n    retMsg: response.retMsg,\n    pnl: pnl.toFixed(2),\n    pnlPct: pnlPct,\n    reason: data.reason\n  }\n}];"
+      },
+      "id": "execute-sell",
+      "name": "Execute SELL Order",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1300, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "const data = $input.first().json;\nreturn [{\n  json: {\n    action: 'HOLD',\n    symbol: data.symbol,\n    price: data.currentPrice,\n    reason: data.reason\n  }\n}];"
+      },
+      "id": "log-hold",
+      "name": "Log HOLD",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1300, 420]
+    },
+    {
+      "parameters": {
+        "jsCode": "const data = $input.first().json;\n\nlet emoji = '📊';\nif (data.action === 'BUY') emoji = '🟢';\nif (data.action === 'SELL') emoji = data.pnl >= 0 ? '🟢💰' : '🔴';\nif (data.action === 'HOLD') emoji = '⏸';\n\nlet message = `${emoji} <b>Bybit DCA Bot</b>\\n\\n`;\nmessage += `<b>Действие:</b> ${data.action}\\n`;\nmessage += `<b>Пара:</b> ${data.symbol}\\n`;\nmessage += `<b>Цена:</b> <code>$${data.price}</code>\\n`;\n\nif (data.action === 'BUY') {\n  message += `<b>Куплено:</b> ${data.qty} (${data.amountUSDT} USDT)\\n`;\n  message += `<b>Order ID:</b> <code>${data.orderId}</code>\\n`;\n  message += `<b>Ср. цена:</b> $${data.avgPrice?.toFixed(2) || 'N/A'}\\n`;\n  message += `<b>Всего вложено:</b> $${data.totalInvested?.toFixed(2) || 'N/A'}\\n`;\n}\n\nif (data.action === 'SELL') {\n  message += `<b>Продано:</b> ${data.qty}\\n`;\n  message += `<b>Order ID:</b> <code>${data.orderId}</code>\\n`;\n  message += `<b>P&L:</b> $${data.pnl} (${data.pnlPct}%)\\n`;\n}\n\nmessage += `<b>Причина:</b> ${data.reason}\\n`;\nmessage += `\\n⏱ ${new Date().toLocaleString('ru-RU', { timeZone: 'Europe/Moscow' })}`;\n\nif (data.retCode !== undefined && data.retCode !== 0) {\n  message += `\\n\\n⚠️ <b>Ошибка API:</b> ${data.retMsg}`;\n}\n\nreturn [{ json: { message } }];"
+      },
+      "id": "format-notification",
+      "name": "Format Notification",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1520, 300]
+    },
+    {
+      "parameters": {
+        "operation": "sendMessage",
+        "chatId": "={{ $env.TELEGRAM_CHAT_ID }}",
+        "text": "={{ $json.message }}",
+        "additionalFields": {
+          "parse_mode": "HTML"
+        }
+      },
+      "id": "send-telegram",
+      "name": "Send to Telegram",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [1740, 300],
+      "credentials": {
+        "telegramApi": {
+          "id": "TELEGRAM_CREDENTIALS_ID",
+          "name": "Telegram Bot"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Every 4 Hours": {
+      "main": [[ { "node": "Strategy Config", "type": "main", "index": 0 } ]]
+    },
+    "Strategy Config": {
+      "main": [[ { "node": "Fetch Market Data & Balance", "type": "main", "index": 0 } ]]
+    },
+    "Fetch Market Data & Balance": {
+      "main": [[ { "node": "Decide: Buy/Sell/Hold", "type": "main", "index": 0 } ]]
+    },
+    "Decide: Buy/Sell/Hold": {
+      "main": [[ { "node": "Route Action", "type": "main", "index": 0 } ]]
+    },
+    "Route Action": {
+      "main": [
+        [ { "node": "Execute BUY Order", "type": "main", "index": 0 } ],
+        [ { "node": "Execute SELL Order", "type": "main", "index": 0 } ],
+        [ { "node": "Log HOLD", "type": "main", "index": 0 } ]
+      ]
+    },
+    "Execute BUY Order": {
+      "main": [[ { "node": "Format Notification", "type": "main", "index": 0 } ]]
+    },
+    "Execute SELL Order": {
+      "main": [[ { "node": "Format Notification", "type": "main", "index": 0 } ]]
+    },
+    "Log HOLD": {
+      "main": [[ { "node": "Format Notification", "type": "main", "index": 0 } ]]
+    },
+    "Format Notification": {
+      "main": [[ { "node": "Send to Telegram", "type": "main", "index": 0 } ]]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "tags": [
+    { "name": "bybit" },
+    { "name": "trading" },
+    { "name": "dca" }
+  ]
+}
