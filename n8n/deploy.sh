@@ -15,8 +15,9 @@
 set -e
 
 # === CONFIGURATION ===
-N8N_URL="https://quiximoloymer.beget.app"
-N8N_API_KEY="YOUR_N8N_API_KEY"
+# Set these via environment variables or edit here
+N8N_URL="${N8N_URL:-https://your-n8n-instance.example.com}"
+N8N_API_KEY="${N8N_API_KEY:-your_n8n_api_key_here}"
 
 # === COLORS ===
 GREEN='\033[0;32m'

@@ -48,10 +48,42 @@
             {
               "conditions": {
                 "options": { "caseSensitive": false, "leftValue": "", "typeValidation": "strict" },
+                "conditions": [{ "leftValue": "={{ $json.command }}", "rightValue": "/start", "operator": { "type": "string", "operation": "equals" } }],
+                "combinator": "and"
+              },
+              "renameOutput": true, "outputLabel": "start"
+            },
+            {
+              "conditions": {
+                "options": { "caseSensitive": false, "leftValue": "", "typeValidation": "strict" },
                 "conditions": [{ "leftValue": "={{ $json.command }}", "rightValue": "/report", "operator": { "type": "string", "operation": "equals" } }],
                 "combinator": "and"
               },
               "renameOutput": true, "outputLabel": "report"
+            },
+            {
+              "conditions": {
+                "options": { "caseSensitive": false, "leftValue": "", "typeValidation": "strict" },
+                "conditions": [{ "leftValue": "={{ $json.command }}", "rightValue": "/pairs", "operator": { "type": "string", "operation": "equals" } }],
+                "combinator": "and"
+              },
+              "renameOutput": true, "outputLabel": "pairs"
+            },
+            {
+              "conditions": {
+                "options": { "caseSensitive": false, "leftValue": "", "typeValidation": "strict" },
+                "conditions": [{ "leftValue": "={{ $json.command }}", "rightValue": "/set_risk", "operator": { "type": "string", "operation": "equals" } }],
+                "combinator": "and"
+              },
+              "renameOutput": true, "outputLabel": "set_risk"
+            },
+            {
+              "conditions": {
+                "options": { "caseSensitive": false, "leftValue": "", "typeValidation": "strict" },
+                "conditions": [{ "leftValue": "={{ $json.command }}", "rightValue": "/mode", "operator": { "type": "string", "operation": "equals" } }],
+                "combinator": "and"
+              },
+              "renameOutput": true, "outputLabel": "mode"
             },
             {
               "conditions": {
@@ -73,13 +105,13 @@
     },
     {
       "parameters": {
-        "jsCode": "// /status — current positions, P&L, balance\nconst crypto = require('crypto');\n\nconst isTestnet = ($env.BYBIT_TESTNET || 'true').toLowerCase() === 'true';\nconst baseUrl = isTestnet ? 'https://api-testnet.bybit.com' : 'https://api.bybit.com';\nconst apiKey = $env.BYBIT_API_KEY;\nconst apiSecret = $env.BYBIT_API_SECRET;\n\nasync function signedGet(endpoint, params) {\n  const timestamp = Date.now().toString();\n  const recvWindow = '5000';\n  const qs = Object.entries(params).map(([k,v]) => `${k}=${v}`).join('&');\n  const preSign = timestamp + apiKey + recvWindow + qs;\n  const signature = crypto.createHmac('sha256', apiSecret).update(preSign).digest('hex');\n  return this.helpers.httpRequest({\n    method: 'GET',\n    url: `${baseUrl}${endpoint}?${qs}`,\n    headers: {\n      'X-BAPI-API-KEY': apiKey, 'X-BAPI-SIGN': signature,\n      'X-BAPI-TIMESTAMP': timestamp, 'X-BAPI-RECV-WINDOW': recvWindow,\n      'Content-Type': 'application/json'\n    }\n  });\n}\n\n// Get balance\nconst balResp = await signedGet.call(this, '/v5/account/wallet-balance', { accountType: 'UNIFIED' });\nlet equity = 0, availableBalance = 0;\ntry {\n  equity = parseFloat(balResp.result.list[0].totalEquity);\n  availableBalance = parseFloat(balResp.result.list[0].totalAvailableBalance);\n} catch(e) {}\n\n// Get positions\nlet positions = [];\ntry {\n  const posResp = await signedGet.call(this, '/v5/position/list', {\n    category: 'linear', settleCoin: 'USDT'\n  });\n  if (posResp.retCode === 0) {\n    positions = (posResp.result?.list || []).filter(p => parseFloat(p.size) > 0);\n  }\n} catch(e) {}\n\n// Get daily P&L\nconst today = new Date();\ntoday.setHours(0, 0, 0, 0);\nlet dailyPnl = 0;\ntry {\n  const pnlResp = await signedGet.call(this, '/v5/position/closed-pnl', {\n    category: 'linear', startTime: today.getTime().toString(), limit: '100'\n  });\n  if (pnlResp.retCode === 0) {\n    dailyPnl = (pnlResp.result?.list || []).reduce((s, p) => s + parseFloat(p.closedPnl), 0);\n  }\n} catch(e) {}\n\nconst env = isTestnet ? '🧪 TESTNET' : '🔴 MAINNET';\n\nlet msg = `📊 <b>Status Report</b> ${env}\\n\\n`;\nmsg += `<b>Эквити:</b> <code>$${equity.toFixed(2)}</code>\\n`;\nmsg += `<b>Доступно:</b> <code>$${availableBalance.toFixed(2)}</code>\\n`;\nmsg += `<b>P&L за день:</b> <code>$${dailyPnl.toFixed(2)}</code>\\n\\n`;\n\nif (positions.length > 0) {\n  msg += `<b>Открытые позиции (${positions.length}):</b>\\n`;\n  for (const p of positions) {\n    const pnl = parseFloat(p.unrealisedPnl);\n    const emoji = pnl >= 0 ? '🟢' : '🔴';\n    msg += `${emoji} <b>${p.symbol}</b> ${p.side}\\n`;\n    msg += `   Вход: <code>${p.avgPrice}</code> | Цена: <code>${p.markPrice}</code>\\n`;\n    msg += `   P&L: <code>$${pnl.toFixed(2)}</code> | SL: <code>${p.stopLoss || 'N/A'}</code>\\n\\n`;\n  }\n} else {\n  msg += '<i>Нет открытых позиций</i>\\n';\n}\n\nmsg += `\\n⏱ ${new Date().toLocaleString('ru-RU', { timeZone: 'Europe/Moscow' })}`;\n\nreturn [{ json: { message: msg } }];"
+        "jsCode": "// /status — current positions, P&L, balance\nconst crypto = require('crypto');\n\nconst isTestnet = ($env.BYBIT_TESTNET || 'true').toLowerCase() === 'true';\nconst baseUrl = isTestnet ? 'https://api-testnet.bybit.com' : 'https://api.bybit.com';\nconst apiKey = $env.BYBIT_API_KEY;\nconst apiSecret = $env.BYBIT_API_SECRET;\n\nasync function signedGet(endpoint, params) {\n  const timestamp = Date.now().toString();\n  const recvWindow = '5000';\n  const qs = Object.entries(params).map(([k,v]) => `${k}=${v}`).join('&');\n  const preSign = timestamp + apiKey + recvWindow + qs;\n  const signature = crypto.createHmac('sha256', apiSecret).update(preSign).digest('hex');\n  return this.helpers.httpRequest({\n    method: 'GET',\n    url: `${baseUrl}${endpoint}?${qs}`,\n    headers: {\n      'X-BAPI-API-KEY': apiKey, 'X-BAPI-SIGN': signature,\n      'X-BAPI-TIMESTAMP': timestamp, 'X-BAPI-RECV-WINDOW': recvWindow,\n      'Content-Type': 'application/json'\n    }\n  });\n}\n\n// Get balance\nconst balResp = await signedGet.call(this, '/v5/account/wallet-balance', { accountType: 'UNIFIED' });\nlet equity = 0, availableBalance = 0;\ntry {\n  equity = parseFloat(balResp.result.list[0].totalEquity);\n  availableBalance = parseFloat(balResp.result.list[0].totalAvailableBalance);\n} catch(e) {}\n\n// Get positions\nlet positions = [];\ntry {\n  const posResp = await signedGet.call(this, '/v5/position/list', {\n    category: 'linear', settleCoin: 'USDT'\n  });\n  if (posResp.retCode === 0) {\n    positions = (posResp.result?.list || []).filter(p => parseFloat(p.size) > 0);\n  }\n} catch(e) {}\n\n// Get daily P&L\nconst today = new Date();\ntoday.setHours(0, 0, 0, 0);\nlet dailyPnl = 0;\ntry {\n  const pnlResp = await signedGet.call(this, '/v5/position/closed-pnl', {\n    category: 'linear', startTime: today.getTime().toString(), limit: '100'\n  });\n  if (pnlResp.retCode === 0) {\n    dailyPnl = (pnlResp.result?.list || []).reduce((s, p) => s + parseFloat(p.closedPnl), 0);\n  }\n} catch(e) {}\n\nconst store = $getWorkflowStaticData('global');\nconst botStopped = store.botStopped || false;\nconst tradingMode = store.tradingMode || 'both';\nconst riskOverride = store.riskOverride || null;\nconst env = isTestnet ? '🧪 TESTNET' : '🔴 MAINNET';\nconst botStatus = botStopped ? '⛔ ОСТАНОВЛЕН' : '🟢 АКТИВЕН';\n\nlet msg = `📊 <b>Status Report</b> ${env}\\n\\n`;\nmsg += `<b>Статус бота:</b> ${botStatus}\\n`;\nmsg += `<b>Режим:</b> ${tradingMode}\\n`;\nmsg += `<b>Риск на сделку:</b> ${riskOverride || $env.MAX_RISK_PER_TRADE || '1'}%\\n\\n`;\nmsg += `<b>Эквити:</b> <code>$${equity.toFixed(2)}</code>\\n`;\nmsg += `<b>Доступно:</b> <code>$${availableBalance.toFixed(2)}</code>\\n`;\nmsg += `<b>P&L за день:</b> <code>$${dailyPnl.toFixed(2)}</code>\\n\\n`;\n\nif (positions.length > 0) {\n  msg += `<b>Открытые позиции (${positions.length}):</b>\\n`;\n  for (const p of positions) {\n    const pnl = parseFloat(p.unrealisedPnl);\n    const emoji = pnl >= 0 ? '🟢' : '🔴';\n    msg += `${emoji} <b>${p.symbol}</b> ${p.side}\\n`;\n    msg += `   Вход: <code>${p.avgPrice}</code> | Цена: <code>${p.markPrice}</code>\\n`;\n    msg += `   P&L: <code>$${pnl.toFixed(2)}</code> | SL: <code>${p.stopLoss || 'N/A'}</code>\\n\\n`;\n  }\n} else {\n  msg += '<i>Нет открытых позиций</i>\\n';\n}\n\nmsg += `\\n⏱ ${new Date().toLocaleString('ru-RU', { timeZone: 'Europe/Moscow' })}`;\n\nreturn [{ json: { message: msg } }];"
       },
       "id": "cmd-status",
       "name": "CMD: /status",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [960, 200]
+      "position": [960, 100]
     },
     {
       "parameters": {
@@ -89,7 +121,17 @@
       "name": "CMD: /stop",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [960, 360]
+      "position": [960, 240]
+    },
+    {
+      "parameters": {
+        "jsCode": "// /start — resume bot operations\nconst store = $getWorkflowStaticData('global');\nconst wasStopped = store.botStopped || false;\n\nstore.botStopped = false;\nstore.stoppedAt = null;\n\nlet msg = '';\nif (wasStopped) {\n  msg = '🟢 <b>Бот возобновлён</b>\\n\\n';\n  msg += 'Торговля снова активна.\\n';\n  msg += 'Market Scanner продолжит сканирование при следующем запуске по расписанию.\\n';\n} else {\n  msg = '🟢 <b>Бот уже работает</b>\\n\\n';\n  msg += 'Бот не был остановлен.\\n';\n}\n\nconst tradingMode = store.tradingMode || 'both';\nconst riskOverride = store.riskOverride || $env.MAX_RISK_PER_TRADE || '1';\nmsg += `\\n<b>Режим:</b> ${tradingMode}\\n`;\nmsg += `<b>Риск:</b> ${riskOverride}%\\n`;\nmsg += `\\n⏱ ${new Date().toLocaleString('ru-RU', { timeZone: 'Europe/Moscow' })}`;\n\nreturn [{ json: { message: msg } }];"
+      },
+      "id": "cmd-start",
+      "name": "CMD: /start",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [960, 380]
     },
     {
       "parameters": {
@@ -103,13 +145,43 @@
     },
     {
       "parameters": {
-        "jsCode": "// /help — show available commands\nlet msg = '🤖 <b>Gerchik Trading Bot</b>\\n\\n';\nmsg += '<b>Доступные команды:</b>\\n\\n';\nmsg += '/status — текущие позиции, P&L, баланс\\n';\nmsg += '/stop — экстренная остановка бота\\n';\nmsg += '/start — возобновление работы\\n';\nmsg += '/report — P&L за день\\n';\nmsg += '/report week — P&L за неделю\\n';\nmsg += '/pairs — список торговых пар\\n';\nmsg += '/set_risk 0.5 — изменить % риска на сделку\\n';\nmsg += '/help — эта справка\\n';\n\nreturn [{ json: { message: msg } }];"
+        "jsCode": "// /pairs — show current trading pairs by volume\nconst isTestnet = ($env.BYBIT_TESTNET || 'true').toLowerCase() === 'true';\nconst baseUrl = isTestnet ? 'https://api-testnet.bybit.com' : 'https://api.bybit.com';\nconst MIN_VOLUME = parseFloat($env.MIN_VOLUME_24H || '50000000');\n\nlet pairs = [];\ntry {\n  const resp = await this.helpers.httpRequest({\n    method: 'GET',\n    url: `${baseUrl}/v5/market/tickers?category=spot`\n  });\n  if (resp.retCode === 0) {\n    pairs = resp.result.list\n      .filter(t => t.symbol.endsWith('USDT'))\n      .map(t => ({\n        symbol: t.symbol,\n        price: parseFloat(t.lastPrice),\n        volume24h: parseFloat(t.turnover24h),\n        change: parseFloat(t.price24hPcnt) * 100\n      }))\n      .filter(t => t.volume24h >= MIN_VOLUME)\n      .sort((a, b) => b.volume24h - a.volume24h)\n      .slice(0, 20);\n  }\n} catch(e) {}\n\nlet msg = `📋 <b>Торговые пары</b> (мин. объём $${(MIN_VOLUME/1e6).toFixed(0)}M)\\n\\n`;\nmsg += `<b>Найдено:</b> ${pairs.length} пар\\n\\n`;\n\nfor (let i = 0; i < pairs.length; i++) {\n  const p = pairs[i];\n  const changeEmoji = p.change >= 0 ? '🟢' : '🔴';\n  msg += `<b>${i+1}.</b> ${p.symbol}\\n`;\n  msg += `   Цена: <code>${p.price}</code> ${changeEmoji} ${p.change.toFixed(2)}%\\n`;\n  msg += `   Объём: <code>$${(p.volume24h/1e6).toFixed(1)}M</code>\\n\\n`;\n}\n\nmsg += `⏱ ${new Date().toLocaleString('ru-RU', { timeZone: 'Europe/Moscow' })}`;\n\nreturn [{ json: { message: msg } }];"
+      },
+      "id": "cmd-pairs",
+      "name": "CMD: /pairs",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [960, 660]
+    },
+    {
+      "parameters": {
+        "jsCode": "// /set_risk <value> — change risk per trade percentage\nconst args = $input.first().json.args || [];\nconst store = $getWorkflowStaticData('global');\n\nlet msg = '';\n\nif (args.length === 0 || isNaN(parseFloat(args[0]))) {\n  const currentRisk = store.riskOverride || $env.MAX_RISK_PER_TRADE || '1';\n  msg = `⚙️ <b>Настройка риска</b>\\n\\n`;\n  msg += `<b>Текущий риск:</b> ${currentRisk}% на сделку\\n\\n`;\n  msg += `Использование: <code>/set_risk 0.5</code>\\n`;\n  msg += `Допустимые значения: 0.1 — 3\\n`;\n} else {\n  const newRisk = parseFloat(args[0]);\n  \n  if (newRisk < 0.1 || newRisk > 3) {\n    msg = '❌ <b>Ошибка</b>\\n\\nРиск должен быть от 0.1% до 3%\\n';\n  } else {\n    store.riskOverride = newRisk.toString();\n    msg = `✅ <b>Риск обновлён</b>\\n\\n`;\n    msg += `<b>Новый риск:</b> ${newRisk}% на сделку\\n`;\n    msg += `<b>Макс. потери в день:</b> ${$env.MAX_DAILY_LOSS || '3'}%\\n`;\n  }\n}\n\nmsg += `\\n⏱ ${new Date().toLocaleString('ru-RU', { timeZone: 'Europe/Moscow' })}`;\nreturn [{ json: { message: msg } }];"
+      },
+      "id": "cmd-set-risk",
+      "name": "CMD: /set_risk",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [960, 800]
+    },
+    {
+      "parameters": {
+        "jsCode": "// /mode <spot|futures|both> — switch trading mode\nconst args = $input.first().json.args || [];\nconst store = $getWorkflowStaticData('global');\n\nlet msg = '';\nconst validModes = ['spot', 'futures', 'both'];\n\nif (args.length === 0 || !validModes.includes(args[0].toLowerCase())) {\n  const currentMode = store.tradingMode || 'both';\n  msg = `⚙️ <b>Режим торговли</b>\\n\\n`;\n  msg += `<b>Текущий:</b> ${currentMode}\\n\\n`;\n  msg += `Использование: <code>/mode spot|futures|both</code>\\n`;\n  msg += `• <b>spot</b> — только спот\\n`;\n  msg += `• <b>futures</b> — только фьючерсы\\n`;\n  msg += `• <b>both</b> — спот + фьючерсы\\n`;\n} else {\n  const newMode = args[0].toLowerCase();\n  store.tradingMode = newMode;\n  \n  const modeNames = { spot: 'Только спот', futures: 'Только фьючерсы', both: 'Спот + фьючерсы' };\n  msg = `✅ <b>Режим изменён</b>\\n\\n`;\n  msg += `<b>Новый режим:</b> ${modeNames[newMode]}\\n`;\n}\n\nmsg += `\\n⏱ ${new Date().toLocaleString('ru-RU', { timeZone: 'Europe/Moscow' })}`;\nreturn [{ json: { message: msg } }];"
+      },
+      "id": "cmd-mode",
+      "name": "CMD: /mode",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [960, 940]
+    },
+    {
+      "parameters": {
+        "jsCode": "// /help — show available commands\nlet msg = '🤖 <b>Gerchik Trading Bot</b>\\n\\n';\nmsg += '<b>Доступные команды:</b>\\n\\n';\nmsg += '/status — текущие позиции, P&L, баланс\\n';\nmsg += '/stop — экстренная остановка бота\\n';\nmsg += '/start — возобновление работы\\n';\nmsg += '/report — P&L за день\\n';\nmsg += '/report week — P&L за неделю\\n';\nmsg += '/pairs — список торговых пар\\n';\nmsg += '/set_risk 0.5 — изменить % риска на сделку\\n';\nmsg += '/mode spot|futures|both — режим торговли\\n';\nmsg += '/help — эта справка\\n';\n\nreturn [{ json: { message: msg } }];"
       },
       "id": "cmd-help",
       "name": "CMD: /help",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [960, 680]
+      "position": [960, 1080]
     },
     {
       "parameters": {
@@ -139,7 +211,11 @@
       "main": [
         [ { "node": "CMD: /status", "type": "main", "index": 0 } ],
         [ { "node": "CMD: /stop", "type": "main", "index": 0 } ],
+        [ { "node": "CMD: /start", "type": "main", "index": 0 } ],
         [ { "node": "CMD: /report", "type": "main", "index": 0 } ],
+        [ { "node": "CMD: /pairs", "type": "main", "index": 0 } ],
+        [ { "node": "CMD: /set_risk", "type": "main", "index": 0 } ],
+        [ { "node": "CMD: /mode", "type": "main", "index": 0 } ],
         [ { "node": "CMD: /help", "type": "main", "index": 0 } ]
       ]
     },
@@ -149,7 +225,19 @@
     "CMD: /stop": {
       "main": [[ { "node": "Send Response", "type": "main", "index": 0 } ]]
     },
+    "CMD: /start": {
+      "main": [[ { "node": "Send Response", "type": "main", "index": 0 } ]]
+    },
     "CMD: /report": {
+      "main": [[ { "node": "Send Response", "type": "main", "index": 0 } ]]
+    },
+    "CMD: /pairs": {
+      "main": [[ { "node": "Send Response", "type": "main", "index": 0 } ]]
+    },
+    "CMD: /set_risk": {
+      "main": [[ { "node": "Send Response", "type": "main", "index": 0 } ]]
+    },
+    "CMD: /mode": {
       "main": [[ { "node": "Send Response", "type": "main", "index": 0 } ]]
     },
     "CMD: /help": {
