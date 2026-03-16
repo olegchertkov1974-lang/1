@@ -1,0 +1,161 @@
+{
+  "name": "WF5 — Telegram Control Bot (Gerchik System)",
+  "nodes": [
+    {
+      "parameters": {
+        "updates": ["message"],
+        "additionalFields": {}
+      },
+      "id": "tg-trigger",
+      "name": "Telegram Trigger",
+      "type": "n8n-nodes-base.telegramTrigger",
+      "typeVersion": 1.1,
+      "position": [200, 400],
+      "credentials": {
+        "telegramApi": { "id": "TELEGRAM_CREDENTIALS_ID", "name": "Telegram Bot" }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// =============================================\n// Parse Telegram command\n// =============================================\nconst msg = $input.first().json;\nconst text = (msg.message?.text || '').trim();\nconst chatId = msg.message?.chat?.id?.toString() || '';\nconst allowedChat = $env.TELEGRAM_CHAT_ID;\n\n// Security: only allow commands from authorized chat\nif (chatId !== allowedChat) {\n  return [{ json: { command: '_unauthorized', chatId } }];\n}\n\nconst parts = text.split(/\\s+/);\nconst command = parts[0].toLowerCase();\nconst args = parts.slice(1);\n\nreturn [{ json: { command, args, chatId, rawText: text } }];"
+      },
+      "id": "parse-command",
+      "name": "Parse Command",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [440, 400]
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": { "caseSensitive": false, "leftValue": "", "typeValidation": "strict" },
+                "conditions": [{ "leftValue": "={{ $json.command }}", "rightValue": "/status", "operator": { "type": "string", "operation": "equals" } }],
+                "combinator": "and"
+              },
+              "renameOutput": true, "outputLabel": "status"
+            },
+            {
+              "conditions": {
+                "options": { "caseSensitive": false, "leftValue": "", "typeValidation": "strict" },
+                "conditions": [{ "leftValue": "={{ $json.command }}", "rightValue": "/stop", "operator": { "type": "string", "operation": "equals" } }],
+                "combinator": "and"
+              },
+              "renameOutput": true, "outputLabel": "stop"
+            },
+            {
+              "conditions": {
+                "options": { "caseSensitive": false, "leftValue": "", "typeValidation": "strict" },
+                "conditions": [{ "leftValue": "={{ $json.command }}", "rightValue": "/report", "operator": { "type": "string", "operation": "equals" } }],
+                "combinator": "and"
+              },
+              "renameOutput": true, "outputLabel": "report"
+            },
+            {
+              "conditions": {
+                "options": { "caseSensitive": false, "leftValue": "", "typeValidation": "strict" },
+                "conditions": [{ "leftValue": "={{ $json.command }}", "rightValue": "/help", "operator": { "type": "string", "operation": "equals" } }],
+                "combinator": "and"
+              },
+              "renameOutput": true, "outputLabel": "help"
+            }
+          ]
+        },
+        "options": { "fallbackOutput": "extra" }
+      },
+      "id": "route-command",
+      "name": "Route Command",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.2,
+      "position": [680, 400]
+    },
+    {
+      "parameters": {
+        "jsCode": "// /status — current positions, P&L, balance\nconst crypto = require('crypto');\n\nconst isTestnet = ($env.BYBIT_TESTNET || 'true').toLowerCase() === 'true';\nconst baseUrl = isTestnet ? 'https://api-testnet.bybit.com' : 'https://api.bybit.com';\nconst apiKey = $env.BYBIT_API_KEY;\nconst apiSecret = $env.BYBIT_API_SECRET;\n\nasync function signedGet(endpoint, params) {\n  const timestamp = Date.now().toString();\n  const recvWindow = '5000';\n  const qs = Object.entries(params).map(([k,v]) => `${k}=${v}`).join('&');\n  const preSign = timestamp + apiKey + recvWindow + qs;\n  const signature = crypto.createHmac('sha256', apiSecret).update(preSign).digest('hex');\n  return this.helpers.httpRequest({\n    method: 'GET',\n    url: `${baseUrl}${endpoint}?${qs}`,\n    headers: {\n      'X-BAPI-API-KEY': apiKey, 'X-BAPI-SIGN': signature,\n      'X-BAPI-TIMESTAMP': timestamp, 'X-BAPI-RECV-WINDOW': recvWindow,\n      'Content-Type': 'application/json'\n    }\n  });\n}\n\n// Get balance\nconst balResp = await signedGet.call(this, '/v5/account/wallet-balance', { accountType: 'UNIFIED' });\nlet equity = 0, availableBalance = 0;\ntry {\n  equity = parseFloat(balResp.result.list[0].totalEquity);\n  availableBalance = parseFloat(balResp.result.list[0].totalAvailableBalance);\n} catch(e) {}\n\n// Get positions\nlet positions = [];\ntry {\n  const posResp = await signedGet.call(this, '/v5/position/list', {\n    category: 'linear', settleCoin: 'USDT'\n  });\n  if (posResp.retCode === 0) {\n    positions = (posResp.result?.list || []).filter(p => parseFloat(p.size) > 0);\n  }\n} catch(e) {}\n\n// Get daily P&L\nconst today = new Date();\ntoday.setHours(0, 0, 0, 0);\nlet dailyPnl = 0;\ntry {\n  const pnlResp = await signedGet.call(this, '/v5/position/closed-pnl', {\n    category: 'linear', startTime: today.getTime().toString(), limit: '100'\n  });\n  if (pnlResp.retCode === 0) {\n    dailyPnl = (pnlResp.result?.list || []).reduce((s, p) => s + parseFloat(p.closedPnl), 0);\n  }\n} catch(e) {}\n\nconst env = isTestnet ? '🧪 TESTNET' : '🔴 MAINNET';\n\nlet msg = `📊 <b>Status Report</b> ${env}\\n\\n`;\nmsg += `<b>Эквити:</b> <code>$${equity.toFixed(2)}</code>\\n`;\nmsg += `<b>Доступно:</b> <code>$${availableBalance.toFixed(2)}</code>\\n`;\nmsg += `<b>P&L за день:</b> <code>$${dailyPnl.toFixed(2)}</code>\\n\\n`;\n\nif (positions.length > 0) {\n  msg += `<b>Открытые позиции (${positions.length}):</b>\\n`;\n  for (const p of positions) {\n    const pnl = parseFloat(p.unrealisedPnl);\n    const emoji = pnl >= 0 ? '🟢' : '🔴';\n    msg += `${emoji} <b>${p.symbol}</b> ${p.side}\\n`;\n    msg += `   Вход: <code>${p.avgPrice}</code> | Цена: <code>${p.markPrice}</code>\\n`;\n    msg += `   P&L: <code>$${pnl.toFixed(2)}</code> | SL: <code>${p.stopLoss || 'N/A'}</code>\\n\\n`;\n  }\n} else {\n  msg += '<i>Нет открытых позиций</i>\\n';\n}\n\nmsg += `\\n⏱ ${new Date().toLocaleString('ru-RU', { timeZone: 'Europe/Moscow' })}`;\n\nreturn [{ json: { message: msg } }];"
+      },
+      "id": "cmd-status",
+      "name": "CMD: /status",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [960, 200]
+    },
+    {
+      "parameters": {
+        "jsCode": "// /stop — emergency stop all workflows\nconst crypto = require('crypto');\n\nconst isTestnet = ($env.BYBIT_TESTNET || 'true').toLowerCase() === 'true';\nconst baseUrl = isTestnet ? 'https://api-testnet.bybit.com' : 'https://api.bybit.com';\nconst apiKey = $env.BYBIT_API_KEY;\nconst apiSecret = $env.BYBIT_API_SECRET;\n\n// Cancel all orders\nasync function signedPost(endpoint, body) {\n  const timestamp = Date.now().toString();\n  const recvWindow = '5000';\n  const bodyStr = JSON.stringify(body);\n  const preSign = timestamp + apiKey + recvWindow + bodyStr;\n  const signature = crypto.createHmac('sha256', apiSecret).update(preSign).digest('hex');\n  return this.helpers.httpRequest({\n    method: 'POST',\n    url: `${baseUrl}${endpoint}`,\n    headers: {\n      'X-BAPI-API-KEY': apiKey, 'X-BAPI-SIGN': signature,\n      'X-BAPI-TIMESTAMP': timestamp, 'X-BAPI-RECV-WINDOW': recvWindow,\n      'Content-Type': 'application/json'\n    },\n    body\n  });\n}\n\ntry {\n  await signedPost.call(this, '/v5/order/cancel-all', { category: 'linear', settleCoin: 'USDT' });\n  await signedPost.call(this, '/v5/order/cancel-all', { category: 'spot' });\n} catch(e) {}\n\n// Set global stop flag\nconst store = $getWorkflowStaticData('global');\nstore.botStopped = true;\nstore.stoppedAt = Date.now();\n\nlet msg = '⛔ <b>ЭКСТРЕННАЯ ОСТАНОВКА</b>\\n\\n';\nmsg += 'Все ордера отменены.\\n';\nmsg += 'Бот остановлен.\\n';\nmsg += 'Для возобновления отправь /start\\n';\nmsg += `\\n⏱ ${new Date().toLocaleString('ru-RU', { timeZone: 'Europe/Moscow' })}`;\n\nreturn [{ json: { message: msg } }];"
+      },
+      "id": "cmd-stop",
+      "name": "CMD: /stop",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [960, 360]
+    },
+    {
+      "parameters": {
+        "jsCode": "// /report — daily/weekly report\nconst crypto = require('crypto');\nconst args = $input.first().json.args || [];\nconst period = args[0] || 'day'; // day or week\n\nconst isTestnet = ($env.BYBIT_TESTNET || 'true').toLowerCase() === 'true';\nconst baseUrl = isTestnet ? 'https://api-testnet.bybit.com' : 'https://api.bybit.com';\nconst apiKey = $env.BYBIT_API_KEY;\nconst apiSecret = $env.BYBIT_API_SECRET;\n\nasync function signedGet(endpoint, params) {\n  const timestamp = Date.now().toString();\n  const recvWindow = '5000';\n  const qs = Object.entries(params).map(([k,v]) => `${k}=${v}`).join('&');\n  const preSign = timestamp + apiKey + recvWindow + qs;\n  const signature = crypto.createHmac('sha256', apiSecret).update(preSign).digest('hex');\n  return this.helpers.httpRequest({\n    method: 'GET',\n    url: `${baseUrl}${endpoint}?${qs}`,\n    headers: {\n      'X-BAPI-API-KEY': apiKey, 'X-BAPI-SIGN': signature,\n      'X-BAPI-TIMESTAMP': timestamp, 'X-BAPI-RECV-WINDOW': recvWindow,\n      'Content-Type': 'application/json'\n    }\n  });\n}\n\nconst now = new Date();\nconst start = new Date(now);\nif (period === 'week') {\n  start.setDate(start.getDate() - 7);\n} else {\n  start.setHours(0, 0, 0, 0);\n}\n\nlet trades = [];\ntry {\n  const pnlResp = await signedGet.call(this, '/v5/position/closed-pnl', {\n    category: 'linear', startTime: start.getTime().toString(), limit: '100'\n  });\n  if (pnlResp.retCode === 0) {\n    trades = pnlResp.result?.list || [];\n  }\n} catch(e) {}\n\nconst totalPnl = trades.reduce((s, t) => s + parseFloat(t.closedPnl), 0);\nconst wins = trades.filter(t => parseFloat(t.closedPnl) > 0).length;\nconst losses = trades.filter(t => parseFloat(t.closedPnl) < 0).length;\nconst winRate = trades.length > 0 ? (wins / trades.length * 100).toFixed(1) : '0';\n\nconst periodLabel = period === 'week' ? 'Неделя' : 'День';\nconst emoji = totalPnl >= 0 ? '📈' : '📉';\n\nlet msg = `${emoji} <b>Отчёт за ${periodLabel.toLowerCase()}</b>\\n\\n`;\nmsg += `<b>Сделок:</b> ${trades.length}\\n`;\nmsg += `<b>Прибыльных:</b> ${wins} | <b>Убыточных:</b> ${losses}\\n`;\nmsg += `<b>Win Rate:</b> ${winRate}%\\n`;\nmsg += `<b>Итого P&L:</b> <code>$${totalPnl.toFixed(2)}</code>\\n\\n`;\n\nif (trades.length > 0) {\n  msg += '<b>Последние сделки:</b>\\n';\n  for (const t of trades.slice(0, 10)) {\n    const pnl = parseFloat(t.closedPnl);\n    const e = pnl >= 0 ? '✅' : '❌';\n    msg += `${e} ${t.symbol} — $${pnl.toFixed(2)}\\n`;\n  }\n}\n\nmsg += `\\n⏱ ${new Date().toLocaleString('ru-RU', { timeZone: 'Europe/Moscow' })}`;\n\nreturn [{ json: { message: msg } }];"
+      },
+      "id": "cmd-report",
+      "name": "CMD: /report",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [960, 520]
+    },
+    {
+      "parameters": {
+        "jsCode": "// /help — show available commands\nlet msg = '🤖 <b>Gerchik Trading Bot</b>\\n\\n';\nmsg += '<b>Доступные команды:</b>\\n\\n';\nmsg += '/status — текущие позиции, P&L, баланс\\n';\nmsg += '/stop — экстренная остановка бота\\n';\nmsg += '/start — возобновление работы\\n';\nmsg += '/report — P&L за день\\n';\nmsg += '/report week — P&L за неделю\\n';\nmsg += '/pairs — список торговых пар\\n';\nmsg += '/set_risk 0.5 — изменить % риска на сделку\\n';\nmsg += '/help — эта справка\\n';\n\nreturn [{ json: { message: msg } }];"
+      },
+      "id": "cmd-help",
+      "name": "CMD: /help",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [960, 680]
+    },
+    {
+      "parameters": {
+        "operation": "sendMessage",
+        "chatId": "={{ $env.TELEGRAM_CHAT_ID }}",
+        "text": "={{ $json.message }}",
+        "additionalFields": { "parse_mode": "HTML" }
+      },
+      "id": "send-response",
+      "name": "Send Response",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [1200, 400],
+      "credentials": {
+        "telegramApi": { "id": "TELEGRAM_CREDENTIALS_ID", "name": "Telegram Bot" }
+      }
+    }
+  ],
+  "connections": {
+    "Telegram Trigger": {
+      "main": [[ { "node": "Parse Command", "type": "main", "index": 0 } ]]
+    },
+    "Parse Command": {
+      "main": [[ { "node": "Route Command", "type": "main", "index": 0 } ]]
+    },
+    "Route Command": {
+      "main": [
+        [ { "node": "CMD: /status", "type": "main", "index": 0 } ],
+        [ { "node": "CMD: /stop", "type": "main", "index": 0 } ],
+        [ { "node": "CMD: /report", "type": "main", "index": 0 } ],
+        [ { "node": "CMD: /help", "type": "main", "index": 0 } ]
+      ]
+    },
+    "CMD: /status": {
+      "main": [[ { "node": "Send Response", "type": "main", "index": 0 } ]]
+    },
+    "CMD: /stop": {
+      "main": [[ { "node": "Send Response", "type": "main", "index": 0 } ]]
+    },
+    "CMD: /report": {
+      "main": [[ { "node": "Send Response", "type": "main", "index": 0 } ]]
+    },
+    "CMD: /help": {
+      "main": [[ { "node": "Send Response", "type": "main", "index": 0 } ]]
+    }
+  },
+  "settings": { "executionOrder": "v1" },
+  "tags": [{ "name": "gerchik-bot" }, { "name": "telegram" }]
+}

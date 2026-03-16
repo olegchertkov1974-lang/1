@@ -1,117 +1,207 @@
-# Bybit Trading Assistant for n8n
+# Gerchik Trading Bot — n8n + Claude AI + Bybit
 
-Набор воркфлоу для автоматизированной торговли на бирже Bybit через n8n с уведомлениями в Telegram.
+Автоматический торговый бот на основе системы Александра Герчика.
+Использует Claude Sonnet для анализа рынка и принятия торговых решений.
+
+## Архитектура
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                    n8n Orchestrator                          │
+│                                                             │
+│  WF1: Market Scanner ──webhook──▶ WF2: Trade Executor       │
+│       (каждые 15 мин)                 (по сигналу)          │
+│                                                             │
+│  WF3: Position Manager              WF4: Risk Guardian      │
+│       (каждую 1 мин)                     (каждые 5 мин)     │
+│                                                             │
+│  WF5: Telegram Control Bot           WF6: Watchdog          │
+│       (по команде)                       (каждые 10 мин)    │
+└──────────┬──────────┬───────────┬──────────┬────────────────┘
+           │          │           │          │
+     Claude API   Bybit API   Telegram   Monitoring
+```
 
 ## Воркфлоу
 
-### 1. Price Monitor (`01-price-monitor.json`)
-Мониторинг цен монет каждые 5 минут с алертами в Telegram.
+### WF1 — Market Scanner (`01-market-scanner.json`)
+- Запуск каждые 15 минут
+- Получает топ-20 пар по объёму (>$50M за 24ч)
+- Загружает свечи по 3 таймфреймам (4H, 1H, 15m)
+- Вычисляет уровни поддержки/сопротивления
+- Claude анализирует каждую пару по системе Герчика
+- Фильтрует сигналы: confidence >= 75, R:R >= 3, alignment = true
+- Отправляет сигнал в WF2 через webhook
 
-**Функции:**
-- Отслеживание списка монет (BTC, ETH, SOL и др.)
-- Алерты при достижении целевых уровней цены
-- Алерты при высокой волатильности (>5% за 24ч)
-- Кулдаун 15 мин между одинаковыми алертами
+### WF2 — Trade Executor (`02-trade-executor.json`)
+- Принимает сигнал от WF1
+- Claude подтверждает сигнал (2-е мнение, риск-менеджмент)
+- Проверяет баланс, кол-во открытых позиций, дневной лимит потерь
+- Рассчитывает размер позиции (1% риск)
+- Выставляет ордер + стоп-лосс + тейк-профит
+- Уведомление в Telegram
 
-**Настройка:** Отредактируйте массив `WATCHLIST` в ноде "Check Price Alerts".
+### WF3 — Position Manager (`03-position-manager.json`)
+- Запуск каждую минуту
+- Получает все открытые позиции
+- Claude анализирует каждую позицию
+- Переносит стоп в безубыток при 1R прибыли
+- Частичная фиксация на TP1/TP2 (30%/30%)
+- Полное закрытие на TP3 или при изменении структуры рынка
 
-### 2. Auto Trader - DCA (`02-auto-trader.json`)
-Автоматическая DCA-стратегия (Dollar Cost Averaging) с тейк-профитом и стоп-лоссом.
+### WF4 — Risk Guardian (`04-risk-guardian.json`)
+- Запуск каждые 5 минут
+- Проверяет дневной P&L (закрытый + нереализованный)
+- При превышении 3% дневной потери:
+  - Отменяет все ордера
+  - Закрывает все позиции
+  - Останавливает бота
+  - Отправляет экстренный алерт
 
-**Функции:**
-- Покупка при падении цены на заданный процент
-- Автоматический тейк-профит и стоп-лосс
-- Лимит максимальных вложений
-- Расчёт средней цены и P&L
-- Уведомления обо всех действиях в Telegram
+### WF5 — Telegram Control Bot (`05-telegram-control.json`)
+Команды:
+- `/status` — позиции, P&L, баланс
+- `/stop` — экстренная остановка
+- `/start` — возобновление
+- `/report` — P&L за день
+- `/report week` — P&L за неделю
+- `/help` — справка
 
-**Настройка:** Отредактируйте объект `CONFIG` в ноде "Strategy Config":
-- `symbol` — торговая пара (по умолчанию BTCUSDT)
-- `orderAmountUSDT` — сумма одной покупки
-- `dipThreshold` — порог падения для покупки (%)
-- `takeProfitPct` — тейк-профит (%)
-- `stopLossPct` — стоп-лосс (%)
-- `maxTotalInvestment` — максимум вложений
-- `useTestnet` — **true** для тестнета!
-
-### 3. Signal Copier (`03-signal-copier.json`)
-Копирование торговых сигналов из Telegram на Bybit.
-
-**Поддерживаемые форматы сигналов:**
-```
-BUY BTCUSDT 95000
-SELL ETHUSDT market
-LONG SOLUSDT 180 TP:200 SL:170
-```
-
-**Настройка:**
-- Добавьте ID разрешённых чатов в массив `ALLOWED_CHATS`
-- Установите `ORDER_AMOUNT_USDT` — сумма ордера на сигнал
-- Установите `USE_TESTNET = true` для тестирования
+### WF6 — Watchdog (`06-watchdog.json`)
+- Запуск каждые 10 минут
+- Проверяет доступность Bybit API
+- Проверяет доступность Claude API
+- Проверяет env-переменные
+- Алерт в Telegram при проблемах
 
 ## Установка
 
-### 1. Переменные окружения n8n
+### 1. Переменные окружения
 
-Добавьте в настройки n8n (Settings → Environment Variables) или в файл `.env`:
+Добавьте в n8n (Settings → Environment Variables):
 
 ```env
-BYBIT_API_KEY=ваш_api_key
-BYBIT_API_SECRET=ваш_api_secret
-TELEGRAM_CHAT_ID=ваш_chat_id
+BYBIT_API_KEY=your_api_key
+BYBIT_API_SECRET=your_api_secret
+BYBIT_TESTNET=true
+
+ANTHROPIC_API_KEY=your_claude_api_key
+
+TELEGRAM_BOT_TOKEN=your_bot_token
+TELEGRAM_CHAT_ID=your_chat_id
+
+MAX_RISK_PER_TRADE=1
+MAX_DAILY_LOSS=3
+MAX_OPEN_POSITIONS=3
+MIN_RISK_REWARD=3
+MIN_CONFIDENCE=75
+MIN_VOLUME_24H=50000000
 ```
 
-### 2. Создание Telegram-бота
+### 2. Bybit API ключи
 
-1. Напишите [@BotFather](https://t.me/BotFather) в Telegram
-2. Отправьте `/newbot` и следуйте инструкциям
-3. Сохраните полученный токен бота
-4. В n8n: **Credentials → Add → Telegram API** → вставьте токен
-
-### 3. Получение Chat ID
-
-1. Напишите вашему боту `/start`
-2. Откройте в браузере: `https://api.telegram.org/bot<TOKEN>/getUpdates`
-3. Найдите `"chat":{"id":123456789}` — это ваш Chat ID
-
-### 4. API-ключи Bybit
-
-1. Войдите на [bybit.com](https://www.bybit.com)
+1. Войдите на [bybit.com](https://www.bybit.com) (или testnet.bybit.com для тестнета)
 2. **Account → API Management → Create New Key**
-3. Выберите тип: **System-Generated**
+3. Тип: **System-Generated**
 4. Разрешения: **Read + Trade** (НЕ давайте Withdraw!)
-5. Привяжите к IP вашего сервера для безопасности
+5. IP Whitelist: добавьте IP вашего сервера
+6. Для тестнета: создайте отдельные ключи на testnet.bybit.com
+
+### 3. Telegram бот
+
+1. Напишите [@BotFather](https://t.me/BotFather)
+2. `/newbot` → следуйте инструкциям
+3. Сохраните токен
+4. В n8n: **Credentials → Add → Telegram API** → вставьте токен
+5. Получите Chat ID:
+   - Напишите боту `/start`
+   - Откройте `https://api.telegram.org/bot<TOKEN>/getUpdates`
+   - Найдите `"chat":{"id":123456789}`
+
+### 4. Claude API ключ
+
+1. Зарегистрируйтесь на [console.anthropic.com](https://console.anthropic.com)
+2. **API Keys → Create Key**
+3. Сохраните ключ
 
 ### 5. Импорт воркфлоу
 
-1. Откройте n8n в браузере
+1. Откройте n8n
 2. **Workflows → Import from File**
-3. Импортируйте JSON-файлы из папки `workflows/`
-4. В каждом воркфлоу обновите Telegram credentials (нажмите на Telegram-ноды)
-5. Активируйте воркфлоу
+3. Импортируйте файлы из `workflows/` **по порядку** (01 → 06)
+4. В каждом воркфлоу: кликните на Telegram-ноды → обновите credentials
+5. Обновите `WEBHOOK_URL` в env — должен совпадать с URL вашего n8n
+
+### 6. Настройка credentials в n8n
+
+В интерфейсе n8n создайте:
+- **Telegram API** → Bot Token
+- Env vars добавьте через Settings → Environment Variables
+
+API-ключи Bybit и Claude передаются через env-переменные (не через n8n credentials), так как используются в Code-нодах через `$env`.
+
+## Чек-лист: запуск на тестнете
+
+- [ ] `BYBIT_TESTNET=true` в env
+- [ ] API ключи от testnet.bybit.com
+- [ ] Telegram бот создан и работает (`/help` отвечает)
+- [ ] Claude API ключ валидный (Watchdog показывает OK)
+- [ ] Импортированы все 6 воркфлоу
+- [ ] Telegram credentials обновлены во всех воркфлоу
+- [ ] WEBHOOK_URL указывает на ваш n8n сервер
+- [ ] Активированы WF5 (Telegram Control) и WF6 (Watchdog)
+- [ ] Отправьте `/status` боту — должен показать баланс тестнета
+- [ ] Активируйте WF4 (Risk Guardian)
+- [ ] Активируйте WF3 (Position Manager)
+- [ ] Активируйте WF1 (Market Scanner) — он автоматически вызовет WF2
+- [ ] Наблюдайте минимум 2 недели
+- [ ] Проверьте, что Risk Guardian корректно срабатывает (симулируйте потери)
+
+## Чек-лист: переход на mainnet
+
+- [ ] Тестнет работал стабильно минимум 2 недели
+- [ ] Win rate > 50% на тестнете
+- [ ] Risk Guardian тестирован и работает
+- [ ] `/stop` команда тестирована
+- [ ] Создайте НОВЫЕ API ключи на mainnet bybit.com
+- [ ] IP Whitelist настроен на mainnet ключах
+- [ ] Разрешения: ТОЛЬКО Read + Trade (не Withdraw!)
+- [ ] Замените `BYBIT_TESTNET=false`
+- [ ] Замените `BYBIT_API_KEY` и `BYBIT_API_SECRET` на mainnet ключи
+- [ ] Начните с уменьшенных лимитов: `MAX_RISK_PER_TRADE=0.5`
+- [ ] Первые дни активно мониторьте через Telegram
+- [ ] Постепенно увеличивайте `MAX_RISK_PER_TRADE` до 1%
 
 ## Безопасность
 
-- **Всегда начинайте с тестнета Bybit** (`useTestnet: true`)
-- Привяжите API-ключи к IP сервера
-- Не давайте API-ключу права на вывод средств (Withdraw)
-- Установите лимиты инвестиций (`maxTotalInvestment`)
-- Используйте стоп-лоссы
-- Мониторьте работу бота через Telegram-уведомления
+- API ключи ТОЛЬКО в env-переменных, не в коде
+- Bybit ключи БЕЗ права на вывод (Withdraw)
+- IP whitelist на Bybit API = IP сервера
+- Telegram бот реагирует только на ваш chat ID
+- `BYBIT_TESTNET=true` по умолчанию
+- Risk Guardian автоматически останавливает при потерях > 3%
+- Watchdog мониторит здоровье всех систем
+- Если Claude API недоступен — бот НЕ торгует
 
 ## Структура файлов
 
 ```
 n8n/
-├── docker-compose.yml        # Docker конфигурация n8n + PostgreSQL
-├── .env.example              # Пример переменных окружения
-├── README.md                 # Эта инструкция
+├── docker-compose.yml              # Docker: n8n + PostgreSQL
+├── .env.example                    # Шаблон переменных окружения
+├── README.md                       # Эта документация
+├── utils/
+│   ├── bybit-helpers.js            # Утилиты для Bybit API
+│   └── claude-prompts.js           # Системные промты для Claude
 └── workflows/
-    ├── 01-price-monitor.json # Мониторинг цен
-    ├── 02-auto-trader.json   # DCA автоторговля
-    └── 03-signal-copier.json # Копирование сигналов
+    ├── 01-market-scanner.json      # Сканер рынка
+    ├── 02-trade-executor.json      # Исполнение ордеров
+    ├── 03-position-manager.json    # Управление позициями
+    ├── 04-risk-guardian.json       # Контроль рисков
+    ├── 05-telegram-control.json    # Telegram команды
+    └── 06-watchdog.json            # Мониторинг системы
 ```
 
 ## Disclaimer
 
-Торговля криптовалютами несёт финансовые риски. Автоматическая торговля может привести к потере средств. Используйте на свой страх и риск. Тестируйте стратегии на тестнете перед запуском на реальные средства.
+Торговля криптовалютами несёт финансовые риски. Автоматическая торговля может привести к полной потере средств. Используйте на свой страх и риск. Обязательно тестируйте на тестнете минимум 2 недели перед переходом на реальные средства. Прошлые результаты не гарантируют будущих.

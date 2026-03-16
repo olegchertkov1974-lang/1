@@ -1,0 +1,101 @@
+{
+  "name": "WF4 — Risk Guardian (Gerchik System)",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [{ "field": "minutes", "minutesInterval": 5 }]
+        }
+      },
+      "id": "cron-5m",
+      "name": "Every 5 Minutes",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [200, 400]
+    },
+    {
+      "parameters": {
+        "jsCode": "// =============================================\n// Check daily P&L and enforce risk limits\n// =============================================\nconst crypto = require('crypto');\n\nconst isTestnet = ($env.BYBIT_TESTNET || 'true').toLowerCase() === 'true';\nconst baseUrl = isTestnet ? 'https://api-testnet.bybit.com' : 'https://api.bybit.com';\nconst apiKey = $env.BYBIT_API_KEY;\nconst apiSecret = $env.BYBIT_API_SECRET;\nconst MAX_DAILY_LOSS = parseFloat($env.MAX_DAILY_LOSS || '3');\n\nasync function signedGet(endpoint, params) {\n  const timestamp = Date.now().toString();\n  const recvWindow = '5000';\n  const qs = Object.entries(params).map(([k,v]) => `${k}=${v}`).join('&');\n  const preSign = timestamp + apiKey + recvWindow + qs;\n  const signature = crypto.createHmac('sha256', apiSecret).update(preSign).digest('hex');\n  return this.helpers.httpRequest({\n    method: 'GET',\n    url: `${baseUrl}${endpoint}?${qs}`,\n    headers: {\n      'X-BAPI-API-KEY': apiKey, 'X-BAPI-SIGN': signature,\n      'X-BAPI-TIMESTAMP': timestamp, 'X-BAPI-RECV-WINDOW': recvWindow,\n      'Content-Type': 'application/json'\n    }\n  });\n}\n\n// Get wallet balance\nconst balResp = await signedGet.call(this, '/v5/account/wallet-balance', { accountType: 'UNIFIED' });\nlet totalEquity = 0;\ntry {\n  totalEquity = parseFloat(balResp.result.list[0].totalEquity);\n} catch(e) {}\n\n// Get closed P&L for today\nconst today = new Date();\ntoday.setHours(0, 0, 0, 0);\nconst startTime = today.getTime().toString();\n\nlet dailyPnl = 0;\ntry {\n  const pnlResp = await signedGet.call(this, '/v5/position/closed-pnl', {\n    category: 'linear', startTime, limit: '100'\n  });\n  if (pnlResp.retCode === 0) {\n    dailyPnl = (pnlResp.result?.list || []).reduce((sum, p) => sum + parseFloat(p.closedPnl), 0);\n  }\n} catch(e) {}\n\n// Get unrealized P&L from open positions\nlet unrealizedPnl = 0;\ntry {\n  const posResp = await signedGet.call(this, '/v5/position/list', {\n    category: 'linear', settleCoin: 'USDT'\n  });\n  if (posResp.retCode === 0) {\n    unrealizedPnl = (posResp.result?.list || [])\n      .filter(p => parseFloat(p.size) > 0)\n      .reduce((sum, p) => sum + parseFloat(p.unrealisedPnl), 0);\n  }\n} catch(e) {}\n\nconst totalDailyPnl = dailyPnl + unrealizedPnl;\nconst dailyLossPercent = totalEquity > 0 ? Math.abs(Math.min(totalDailyPnl, 0)) / totalEquity * 100 : 0;\nconst breached = dailyLossPercent >= MAX_DAILY_LOSS;\n\n// Store daily loss for other workflows\nconst store = $getWorkflowStaticData('global');\nstore.dailyLoss = dailyLossPercent;\nstore.lastCheck = Date.now();\n\n// Reset daily loss tracker at midnight\nconst lastReset = store.lastReset || 0;\nif (Date.now() - lastReset > 24 * 60 * 60 * 1000) {\n  store.dailyLoss = 0;\n  store.lastReset = Date.now();\n}\n\nreturn [{\n  json: {\n    totalEquity,\n    dailyPnl: dailyPnl.toFixed(2),\n    unrealizedPnl: unrealizedPnl.toFixed(2),\n    totalDailyPnl: totalDailyPnl.toFixed(2),\n    dailyLossPercent: dailyLossPercent.toFixed(2),\n    maxDailyLoss: MAX_DAILY_LOSS,\n    breached,\n    baseUrl\n  }\n}];"
+      },
+      "id": "check-pnl",
+      "name": "Check Daily P&L",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [440, 400]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict" },
+          "conditions": [{
+            "leftValue": "={{ $json.breached }}",
+            "rightValue": true,
+            "operator": { "type": "boolean", "operation": "true" }
+          }],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "if-breached",
+      "name": "Daily Limit Breached?",
+      "type": "n8n-nodes-base.filter",
+      "typeVersion": 2,
+      "position": [680, 400]
+    },
+    {
+      "parameters": {
+        "jsCode": "// =============================================\n// EMERGENCY: Close all positions\n// =============================================\nconst data = $input.first().json;\nconst crypto = require('crypto');\n\nconst apiKey = $env.BYBIT_API_KEY;\nconst apiSecret = $env.BYBIT_API_SECRET;\n\nasync function signedGet(endpoint, params) {\n  const timestamp = Date.now().toString();\n  const recvWindow = '5000';\n  const qs = Object.entries(params).map(([k,v]) => `${k}=${v}`).join('&');\n  const preSign = timestamp + apiKey + recvWindow + qs;\n  const signature = crypto.createHmac('sha256', apiSecret).update(preSign).digest('hex');\n  return this.helpers.httpRequest({\n    method: 'GET',\n    url: `${data.baseUrl}${endpoint}?${qs}`,\n    headers: {\n      'X-BAPI-API-KEY': apiKey, 'X-BAPI-SIGN': signature,\n      'X-BAPI-TIMESTAMP': timestamp, 'X-BAPI-RECV-WINDOW': recvWindow,\n      'Content-Type': 'application/json'\n    }\n  });\n}\n\nasync function signedPost(endpoint, body) {\n  const timestamp = Date.now().toString();\n  const recvWindow = '5000';\n  const bodyStr = JSON.stringify(body);\n  const preSign = timestamp + apiKey + recvWindow + bodyStr;\n  const signature = crypto.createHmac('sha256', apiSecret).update(preSign).digest('hex');\n  return this.helpers.httpRequest({\n    method: 'POST',\n    url: `${data.baseUrl}${endpoint}`,\n    headers: {\n      'X-BAPI-API-KEY': apiKey, 'X-BAPI-SIGN': signature,\n      'X-BAPI-TIMESTAMP': timestamp, 'X-BAPI-RECV-WINDOW': recvWindow,\n      'Content-Type': 'application/json'\n    },\n    body\n  });\n}\n\n// Cancel all open orders\ntry {\n  await signedPost.call(this, '/v5/order/cancel-all', {\n    category: 'linear', settleCoin: 'USDT'\n  });\n  await signedPost.call(this, '/v5/order/cancel-all', {\n    category: 'spot'\n  });\n} catch(e) {}\n\n// Close all positions\nconst closedPositions = [];\ntry {\n  const posResp = await signedGet.call(this, '/v5/position/list', {\n    category: 'linear', settleCoin: 'USDT'\n  });\n  if (posResp.retCode === 0) {\n    for (const pos of (posResp.result?.list || [])) {\n      if (parseFloat(pos.size) === 0) continue;\n      const closeSide = pos.side === 'Buy' ? 'Sell' : 'Buy';\n      try {\n        await signedPost.call(this, '/v5/order/create', {\n          category: 'linear',\n          symbol: pos.symbol,\n          side: closeSide,\n          orderType: 'Market',\n          qty: pos.size,\n          reduceOnly: true\n        });\n        closedPositions.push(pos.symbol);\n      } catch(e) {}\n    }\n  }\n} catch(e) {}\n\nreturn [{\n  json: {\n    ...data,\n    closedPositions,\n    closedCount: closedPositions.length\n  }\n}];"
+      },
+      "id": "emergency-close",
+      "name": "EMERGENCY: Close All",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [920, 400]
+    },
+    {
+      "parameters": {
+        "jsCode": "const data = $input.first().json;\n\nlet msg = '🚨🚨🚨 <b>RISK GUARDIAN ALERT</b> 🚨🚨🚨\\n\\n';\nmsg += '<b>ДНЕВНОЙ ЛИМИТ ПОТЕРЬ ПРЕВЫШЕН!</b>\\n\\n';\nmsg += `<b>Потери за день:</b> ${data.dailyLossPercent}%\\n`;\nmsg += `<b>Лимит:</b> ${data.maxDailyLoss}%\\n`;\nmsg += `<b>P&L закрытых:</b> $${data.dailyPnl}\\n`;\nmsg += `<b>P&L открытых:</b> $${data.unrealizedPnl}\\n`;\nmsg += `<b>Итого:</b> $${data.totalDailyPnl}\\n`;\nmsg += `<b>Эквити:</b> $${data.totalEquity.toFixed(2)}\\n\\n`;\nmsg += `<b>Закрыто позиций:</b> ${data.closedCount}\\n`;\nif (data.closedPositions.length > 0) {\n  msg += `<b>Пары:</b> ${data.closedPositions.join(', ')}\\n`;\n}\nmsg += '\\n<b>⛔ Бот ОСТАНОВЛЕН до следующего дня</b>\\n';\nmsg += `⏱ ${new Date().toLocaleString('ru-RU', { timeZone: 'Europe/Moscow' })}`;\n\nreturn [{ json: { message: msg } }];"
+      },
+      "id": "format-alert",
+      "name": "Format ALERT",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1160, 400]
+    },
+    {
+      "parameters": {
+        "operation": "sendMessage",
+        "chatId": "={{ $env.TELEGRAM_CHAT_ID }}",
+        "text": "={{ $json.message }}",
+        "additionalFields": { "parse_mode": "HTML" }
+      },
+      "id": "send-alert",
+      "name": "TG: EMERGENCY ALERT",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [1400, 400],
+      "credentials": {
+        "telegramApi": { "id": "TELEGRAM_CREDENTIALS_ID", "name": "Telegram Bot" }
+      }
+    }
+  ],
+  "connections": {
+    "Every 5 Minutes": {
+      "main": [[ { "node": "Check Daily P&L", "type": "main", "index": 0 } ]]
+    },
+    "Check Daily P&L": {
+      "main": [[ { "node": "Daily Limit Breached?", "type": "main", "index": 0 } ]]
+    },
+    "Daily Limit Breached?": {
+      "main": [[ { "node": "EMERGENCY: Close All", "type": "main", "index": 0 } ]]
+    },
+    "EMERGENCY: Close All": {
+      "main": [[ { "node": "Format ALERT", "type": "main", "index": 0 } ]]
+    },
+    "Format ALERT": {
+      "main": [[ { "node": "TG: EMERGENCY ALERT", "type": "main", "index": 0 } ]]
+    }
+  },
+  "settings": { "executionOrder": "v1" },
+  "tags": [{ "name": "gerchik-bot" }, { "name": "risk" }]
+}

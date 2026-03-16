@@ -1,0 +1,161 @@
+{
+  "name": "WF1 — Market Scanner (Gerchik System)",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [{ "field": "minutes", "minutesInterval": 15 }]
+        }
+      },
+      "id": "cron-15m",
+      "name": "Every 15 Minutes",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [200, 400]
+    },
+    {
+      "parameters": {
+        "jsCode": "// =============================================\n// STEP 1: Get top trading pairs by 24h volume\n// =============================================\nconst crypto = require('crypto');\n\nconst isTestnet = ($env.BYBIT_TESTNET || 'true').toLowerCase() === 'true';\nconst baseUrl = isTestnet ? 'https://api-testnet.bybit.com' : 'https://api.bybit.com';\nconst MIN_VOLUME = parseFloat($env.MIN_VOLUME_24H || '50000000');\n\n// Fetch spot tickers\nconst spotResponse = await this.helpers.httpRequest({\n  method: 'GET',\n  url: `${baseUrl}/v5/market/tickers?category=spot`\n});\n\nif (spotResponse.retCode !== 0) {\n  throw new Error(`Bybit API error: ${spotResponse.retMsg}`);\n}\n\n// Filter USDT pairs with volume > $50M, sort by volume\nconst pairs = spotResponse.result.list\n  .filter(t => t.symbol.endsWith('USDT'))\n  .map(t => ({\n    symbol: t.symbol,\n    lastPrice: parseFloat(t.lastPrice),\n    volume24h: parseFloat(t.turnover24h),\n    change24h: parseFloat(t.price24hPcnt) * 100\n  }))\n  .filter(t => t.volume24h >= MIN_VOLUME)\n  .sort((a, b) => b.volume24h - a.volume24h)\n  .slice(0, 20); // Top 20 pairs\n\nreturn pairs.map(p => ({ json: { ...p, baseUrl } }));"
+      },
+      "id": "get-top-pairs",
+      "name": "Get Top Pairs by Volume",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [440, 400]
+    },
+    {
+      "parameters": {
+        "jsCode": "// =============================================\n// STEP 2: Fetch candles for 3 timeframes\n// =============================================\nconst pair = $input.first().json;\nconst baseUrl = pair.baseUrl;\nconst symbol = pair.symbol;\n\nasync function fetchKlines(interval, limit) {\n  for (let attempt = 1; attempt <= 3; attempt++) {\n    try {\n      const resp = await this.helpers.httpRequest({\n        method: 'GET',\n        url: `${baseUrl}/v5/market/kline?category=spot&symbol=${symbol}&interval=${interval}&limit=${limit}`\n      });\n      if (resp.retCode === 0) return resp.result.list;\n      if (resp.retCode === 10006) {\n        await new Promise(r => setTimeout(r, Math.pow(2, attempt) * 1000));\n        continue;\n      }\n      return [];\n    } catch(e) {\n      if (attempt === 3) return [];\n      await new Promise(r => setTimeout(r, Math.pow(2, attempt) * 1000));\n    }\n  }\n  return [];\n}\n\n// Fetch 3 timeframes: 4H (senior), 1H (medium), 15m (junior)\nconst [candles4H, candles1H, candles15m] = await Promise.all([\n  fetchKlines.call(this, '240', '100'),  // 4H, 100 candles\n  fetchKlines.call(this, '60', '100'),   // 1H, 100 candles\n  fetchKlines.call(this, '15', '50')     // 15m, 50 candles\n]);\n\n// Format candles: [startTime, open, high, low, close, volume, turnover]\nfunction formatCandles(raw) {\n  return raw.map(c => ({\n    time: parseInt(c[0]),\n    open: parseFloat(c[1]),\n    high: parseFloat(c[2]),\n    low: parseFloat(c[3]),\n    close: parseFloat(c[4]),\n    volume: parseFloat(c[5])\n  })).reverse(); // oldest first\n}\n\nreturn [{\n  json: {\n    symbol: pair.symbol,\n    lastPrice: pair.lastPrice,\n    volume24h: pair.volume24h,\n    change24h: pair.change24h,\n    candles_4h: formatCandles(candles4H),\n    candles_1h: formatCandles(candles1H),\n    candles_15m: formatCandles(candles15m),\n    baseUrl\n  }\n}];"
+      },
+      "id": "fetch-candles",
+      "name": "Fetch Multi-TF Candles",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [680, 400]
+    },
+    {
+      "parameters": {
+        "jsCode": "// =============================================\n// STEP 3: Pre-process data for Claude analysis\n// Compute support/resistance levels, patterns\n// =============================================\nconst data = $input.first().json;\n\nfunction findLevels(candles, tolerance = 0.002) {\n  if (!candles || candles.length === 0) return [];\n  \n  const levels = [];\n  const highs = candles.map(c => c.high);\n  const lows = candles.map(c => c.low);\n  \n  // Find swing highs and lows\n  for (let i = 2; i < candles.length - 2; i++) {\n    // Swing high\n    if (highs[i] > highs[i-1] && highs[i] > highs[i-2] && \n        highs[i] > highs[i+1] && highs[i] > highs[i+2]) {\n      levels.push({ price: highs[i], type: 'resistance' });\n    }\n    // Swing low\n    if (lows[i] < lows[i-1] && lows[i] < lows[i-2] && \n        lows[i] < lows[i+1] && lows[i] < lows[i+2]) {\n      levels.push({ price: lows[i], type: 'support' });\n    }\n  }\n  \n  // Cluster nearby levels and count touches\n  const clustered = [];\n  for (const level of levels) {\n    const existing = clustered.find(l => \n      Math.abs(l.price - level.price) / level.price < tolerance\n    );\n    if (existing) {\n      existing.touches++;\n      existing.price = (existing.price + level.price) / 2;\n    } else {\n      clustered.push({ ...level, touches: 1 });\n    }\n  }\n  \n  // Count additional touches from all candles\n  for (const level of clustered) {\n    for (const candle of candles) {\n      if (Math.abs(candle.high - level.price) / level.price < tolerance ||\n          Math.abs(candle.low - level.price) / level.price < tolerance) {\n        level.touches++;\n      }\n    }\n  }\n  \n  return clustered.sort((a, b) => b.touches - a.touches).slice(0, 10);\n}\n\nfunction detectTrend(candles) {\n  if (!candles || candles.length < 20) return 'sideways';\n  const recent = candles.slice(-20);\n  const sma20 = recent.reduce((s, c) => s + c.close, 0) / 20;\n  const first5 = recent.slice(0, 5).reduce((s, c) => s + c.close, 0) / 5;\n  const last5 = recent.slice(-5).reduce((s, c) => s + c.close, 0) / 5;\n  \n  if (last5 > sma20 * 1.01 && last5 > first5) return 'up';\n  if (last5 < sma20 * 0.99 && last5 < first5) return 'down';\n  return 'sideways';\n}\n\nfunction detectConsolidation(candles) {\n  if (!candles || candles.length < 10) return false;\n  const recent = candles.slice(-10);\n  const highs = recent.map(c => c.high);\n  const lows = recent.map(c => c.low);\n  const range = Math.max(...highs) - Math.min(...lows);\n  const avgPrice = recent.reduce((s, c) => s + c.close, 0) / recent.length;\n  return (range / avgPrice) < 0.02; // < 2% range = consolidation\n}\n\nfunction getAvgVolume(candles) {\n  if (!candles || candles.length === 0) return 0;\n  return candles.reduce((s, c) => s + c.volume, 0) / candles.length;\n}\n\n// Summarize last N candles for Claude (reduce token usage)\nfunction summarizeCandles(candles, count = 20) {\n  if (!candles) return [];\n  return candles.slice(-count).map(c => ({\n    t: c.time, o: c.open, h: c.high, l: c.low, c: c.close, v: Math.round(c.volume)\n  }));\n}\n\nconst analysis = {\n  symbol: data.symbol,\n  lastPrice: data.lastPrice,\n  volume24h: data.volume24h,\n  change24h: data.change24h,\n  \n  trend_4h: detectTrend(data.candles_4h),\n  trend_1h: detectTrend(data.candles_1h),\n  \n  levels_4h: findLevels(data.candles_4h),\n  levels_1h: findLevels(data.candles_1h),\n  \n  consolidation_15m: detectConsolidation(data.candles_15m),\n  avgVolume_1h: getAvgVolume(data.candles_1h),\n  \n  candles_4h_recent: summarizeCandles(data.candles_4h, 30),\n  candles_1h_recent: summarizeCandles(data.candles_1h, 30),\n  candles_15m_recent: summarizeCandles(data.candles_15m, 30),\n  \n  baseUrl: data.baseUrl\n};\n\nreturn [{ json: analysis }];"
+      },
+      "id": "preprocess",
+      "name": "Pre-Process & Find Levels",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [920, 400]
+    },
+    {
+      "parameters": {
+        "jsCode": "// =============================================\n// STEP 4: Call Claude API for market analysis\n// =============================================\nconst data = $input.first().json;\n\nconst SYSTEM_PROMPT = `Ты — профессиональный трейдер, торгующий по системе Александра Герчика.\nТы анализируешь криптовалютные графики на Bybit.\n\nПРАВИЛА АНАЛИЗА:\n1) Определи тренд на старшем таймфрейме (4H/1D).\n2) Найди ключевые уровни поддержки/сопротивления.\n3) Оцени силу уровня (касания, объём, ложные пробои).\n4) Ищи точку входа ТОЛЬКО от уровня с подтверждением.\n5) НЕ входи против тренда старшего ТФ.\n6) НЕ входи без чёткого стоп-лосса за уровнем.\n7) Зона консолидации перед входом обязательна.\n8) Приоритет уровням с ложным пробоем.\n\nФОРМАТ ОТВЕТА строго JSON:\n{\n  \"action\": \"BUY|SELL|WAIT\",\n  \"confidence\": 0-100,\n  \"pair\": \"SYMBOL\",\n  \"market_type\": \"spot|futures\",\n  \"entry_price\": number,\n  \"stop_loss\": number,\n  \"take_profit_1\": number,\n  \"take_profit_2\": number,\n  \"take_profit_3\": number,\n  \"risk_reward_ratio\": number,\n  \"reasoning\": \"краткое объяснение на русском\",\n  \"level_strength\": \"strong|medium|weak\",\n  \"trend_direction\": \"up|down|sideways\",\n  \"timeframe_alignment\": true|false\n}\n\nКРИТЕРИИ ДЛЯ ВХОДА (ВСЕ должны быть true):\n- confidence >= 75\n- risk_reward_ratio >= 3\n- timeframe_alignment == true\n- level_strength == \"strong\" или \"medium\"\n\nЕсли ХОТЬ ОДИН критерий не выполнен — action = \"WAIT\".\n\nВАЖНО: Отвечай ТОЛЬКО валидным JSON. Никакого текста до или после JSON.`;\n\nconst userMessage = `Проанализируй пару ${data.symbol}.\n\nТекущая цена: ${data.lastPrice}\nОбъём 24ч: $${(data.volume24h / 1e6).toFixed(1)}M\nИзменение 24ч: ${data.change24h.toFixed(2)}%\n\nТренд 4H: ${data.trend_4h}\nТренд 1H: ${data.trend_1h}\nКонсолидация 15m: ${data.consolidation_15m ? 'ДА' : 'НЕТ'}\n\nУровни 4H (цена, тип, касания):\n${data.levels_4h.map(l => `  ${l.price.toFixed(2)} - ${l.type} - ${l.touches} касаний`).join('\\n')}\n\nУровни 1H:\n${data.levels_1h.map(l => `  ${l.price.toFixed(2)} - ${l.type} - ${l.touches} касаний`).join('\\n')}\n\nПоследние 30 свечей 4H (time, open, high, low, close, volume):\n${JSON.stringify(data.candles_4h_recent.slice(-10))}\n\nПоследние 30 свечей 1H:\n${JSON.stringify(data.candles_1h_recent.slice(-10))}\n\nПоследние 30 свечей 15m:\n${JSON.stringify(data.candles_15m_recent.slice(-10))}\n\nДай торговый сигнал по системе Герчика.`;\n\ntry {\n  const response = await this.helpers.httpRequest({\n    method: 'POST',\n    url: 'https://api.anthropic.com/v1/messages',\n    headers: {\n      'x-api-key': $env.ANTHROPIC_API_KEY,\n      'anthropic-version': '2023-06-01',\n      'Content-Type': 'application/json'\n    },\n    body: {\n      model: 'claude-sonnet-4-20250514',\n      max_tokens: 1024,\n      system: SYSTEM_PROMPT,\n      messages: [{ role: 'user', content: userMessage }]\n    }\n  });\n\n  const text = response.content[0].text;\n  \n  // Parse JSON from response (handle markdown code blocks)\n  let jsonStr = text;\n  const jsonMatch = text.match(/```(?:json)?\\s*([\\s\\S]*?)```/);\n  if (jsonMatch) jsonStr = jsonMatch[1];\n  \n  const signal = JSON.parse(jsonStr.trim());\n  signal.pair = data.symbol;\n  signal._metadata = {\n    lastPrice: data.lastPrice,\n    volume24h: data.volume24h,\n    levels_4h: data.levels_4h,\n    levels_1h: data.levels_1h,\n    trend_4h: data.trend_4h,\n    trend_1h: data.trend_1h,\n    baseUrl: data.baseUrl\n  };\n  \n  return [{ json: signal }];\n  \n} catch (e) {\n  // Claude API unavailable — don't trade, send alert\n  return [{\n    json: {\n      action: 'WAIT',\n      pair: data.symbol,\n      confidence: 0,\n      reasoning: `Claude API error: ${e.message}`,\n      _error: true,\n      _metadata: { baseUrl: data.baseUrl }\n    }\n  }];\n}"
+      },
+      "id": "claude-analysis",
+      "name": "Claude: Analyze Market",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1160, 400]
+    },
+    {
+      "parameters": {
+        "jsCode": "// =============================================\n// STEP 5: Filter — only pass actionable signals\n// =============================================\nconst signal = $input.first().json;\n\nconst MIN_CONFIDENCE = parseInt($env.MIN_CONFIDENCE || '75');\nconst MIN_RR = parseFloat($env.MIN_RISK_REWARD || '3');\n\nconst isActionable = (\n  signal.action !== 'WAIT' &&\n  signal.confidence >= MIN_CONFIDENCE &&\n  signal.risk_reward_ratio >= MIN_RR &&\n  signal.timeframe_alignment === true &&\n  (signal.level_strength === 'strong' || signal.level_strength === 'medium')\n);\n\n// Also check for Claude API errors\nif (signal._error) {\n  return [{ json: { ...signal, _pass: false, _alert: true } }];\n}\n\nreturn [{ json: { ...signal, _pass: isActionable } }];"
+      },
+      "id": "filter-signals",
+      "name": "Validate Signal Criteria",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1400, 400]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict" },
+          "conditions": [{
+            "leftValue": "={{ $json._pass }}",
+            "rightValue": true,
+            "operator": { "type": "boolean", "operation": "true" }
+          }],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "if-actionable",
+      "name": "Is Actionable?",
+      "type": "n8n-nodes-base.filter",
+      "typeVersion": 2,
+      "position": [1640, 400]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.WEBHOOK_URL }}webhook/trade-executor",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": []
+        },
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json) }}",
+        "options": {}
+      },
+      "id": "trigger-executor",
+      "name": "Trigger Trade Executor",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1880, 400]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Log all scanned pairs summary\nconst items = $input.all();\nconst signals = items.filter(i => i.json._pass === true);\nconst errors = items.filter(i => i.json._alert === true);\n\nlet message = '📡 <b>Market Scanner Report</b>\\n\\n';\nmessage += `<b>Пар проверено:</b> ${items.length}\\n`;\nmessage += `<b>Сигналов найдено:</b> ${signals.length}\\n\\n`;\n\nfor (const sig of signals) {\n  const s = sig.json;\n  const emoji = s.action === 'BUY' ? '🟢' : '🔴';\n  message += `${emoji} <b>${s.pair}</b> — ${s.action}\\n`;\n  message += `   Вход: <code>${s.entry_price}</code>  SL: <code>${s.stop_loss}</code>\\n`;\n  message += `   TP1: <code>${s.take_profit_1}</code> R:R ${s.risk_reward_ratio}\\n`;\n  message += `   Уверенность: ${s.confidence}%  Уровень: ${s.level_strength}\\n\\n`;\n}\n\nif (errors.length > 0) {\n  message += `\\n⚠️ <b>Ошибки API:</b> ${errors.length}\\n`;\n}\n\nmessage += `⏱ ${new Date().toLocaleString('ru-RU', { timeZone: 'Europe/Moscow' })}`;\n\nreturn [{ json: { message } }];"
+      },
+      "id": "build-report",
+      "name": "Build Scan Report",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1640, 600]
+    },
+    {
+      "parameters": {
+        "operation": "sendMessage",
+        "chatId": "={{ $env.TELEGRAM_CHAT_ID }}",
+        "text": "={{ $json.message }}",
+        "additionalFields": { "parse_mode": "HTML" }
+      },
+      "id": "tg-report",
+      "name": "TG: Scan Report",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [1880, 600],
+      "credentials": {
+        "telegramApi": { "id": "TELEGRAM_CREDENTIALS_ID", "name": "Telegram Bot" }
+      }
+    }
+  ],
+  "connections": {
+    "Every 15 Minutes": {
+      "main": [[ { "node": "Get Top Pairs by Volume", "type": "main", "index": 0 } ]]
+    },
+    "Get Top Pairs by Volume": {
+      "main": [[ { "node": "Fetch Multi-TF Candles", "type": "main", "index": 0 } ]]
+    },
+    "Fetch Multi-TF Candles": {
+      "main": [[ { "node": "Pre-Process & Find Levels", "type": "main", "index": 0 } ]]
+    },
+    "Pre-Process & Find Levels": {
+      "main": [[ { "node": "Claude: Analyze Market", "type": "main", "index": 0 } ]]
+    },
+    "Claude: Analyze Market": {
+      "main": [[ { "node": "Validate Signal Criteria", "type": "main", "index": 0 } ]]
+    },
+    "Validate Signal Criteria": {
+      "main": [[
+        { "node": "Is Actionable?", "type": "main", "index": 0 },
+        { "node": "Build Scan Report", "type": "main", "index": 0 }
+      ]]
+    },
+    "Is Actionable?": {
+      "main": [[ { "node": "Trigger Trade Executor", "type": "main", "index": 0 } ]]
+    },
+    "Build Scan Report": {
+      "main": [[ { "node": "TG: Scan Report", "type": "main", "index": 0 } ]]
+    }
+  },
+  "settings": { "executionOrder": "v1" },
+  "tags": [{ "name": "gerchik-bot" }, { "name": "scanner" }]
+}

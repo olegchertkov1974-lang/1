@@ -1,0 +1,88 @@
+{
+  "name": "WF6 — Watchdog (Gerchik System)",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [{ "field": "minutes", "minutesInterval": 10 }]
+        }
+      },
+      "id": "cron-10m",
+      "name": "Every 10 Minutes",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [200, 400]
+    },
+    {
+      "parameters": {
+        "jsCode": "// =============================================\n// Watchdog: verify all workflows are running\n// and system is healthy\n// =============================================\n\nconst checks = [];\n\n// 1. Check Bybit API connectivity\ntry {\n  const isTestnet = ($env.BYBIT_TESTNET || 'true').toLowerCase() === 'true';\n  const baseUrl = isTestnet ? 'https://api-testnet.bybit.com' : 'https://api.bybit.com';\n  const resp = await this.helpers.httpRequest({\n    method: 'GET',\n    url: `${baseUrl}/v5/market/time`\n  });\n  checks.push({\n    name: 'Bybit API',\n    status: resp.retCode === 0 ? 'OK' : 'ERROR',\n    detail: resp.retCode === 0 ? 'Connected' : resp.retMsg\n  });\n} catch(e) {\n  checks.push({ name: 'Bybit API', status: 'DOWN', detail: e.message });\n}\n\n// 2. Check Claude API connectivity\ntry {\n  const resp = await this.helpers.httpRequest({\n    method: 'POST',\n    url: 'https://api.anthropic.com/v1/messages',\n    headers: {\n      'x-api-key': $env.ANTHROPIC_API_KEY,\n      'anthropic-version': '2023-06-01',\n      'Content-Type': 'application/json'\n    },\n    body: {\n      model: 'claude-sonnet-4-20250514',\n      max_tokens: 10,\n      messages: [{ role: 'user', content: 'ping' }]\n    }\n  });\n  checks.push({\n    name: 'Claude API',\n    status: resp.content ? 'OK' : 'ERROR',\n    detail: 'Connected'\n  });\n} catch(e) {\n  checks.push({ name: 'Claude API', status: 'DOWN', detail: e.message });\n}\n\n// 3. Check environment variables\nconst requiredEnvs = [\n  'BYBIT_API_KEY', 'BYBIT_API_SECRET', 'ANTHROPIC_API_KEY',\n  'TELEGRAM_BOT_TOKEN', 'TELEGRAM_CHAT_ID'\n];\nconst missingEnvs = requiredEnvs.filter(e => !$env[e]);\nchecks.push({\n  name: 'Environment',\n  status: missingEnvs.length === 0 ? 'OK' : 'WARNING',\n  detail: missingEnvs.length === 0 ? 'All set' : `Missing: ${missingEnvs.join(', ')}`\n});\n\n// 4. Check bot stopped flag\nconst store = $getWorkflowStaticData('global');\nchecks.push({\n  name: 'Bot Status',\n  status: store.botStopped ? 'STOPPED' : 'RUNNING',\n  detail: store.botStopped ? `Stopped at ${new Date(store.stoppedAt).toLocaleString('ru-RU')}` : 'Active'\n});\n\n// Determine overall health\nconst hasErrors = checks.some(c => c.status === 'DOWN' || c.status === 'ERROR');\nconst hasWarnings = checks.some(c => c.status === 'WARNING' || c.status === 'STOPPED');\n\nreturn [{\n  json: {\n    checks,\n    healthy: !hasErrors,\n    hasWarnings,\n    needsAlert: hasErrors\n  }\n}];"
+      },
+      "id": "health-check",
+      "name": "System Health Check",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [440, 400]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict" },
+          "conditions": [{
+            "leftValue": "={{ $json.needsAlert }}",
+            "rightValue": true,
+            "operator": { "type": "boolean", "operation": "true" }
+          }],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "if-unhealthy",
+      "name": "System Unhealthy?",
+      "type": "n8n-nodes-base.filter",
+      "typeVersion": 2,
+      "position": [680, 400]
+    },
+    {
+      "parameters": {
+        "jsCode": "const data = $input.first().json;\n\nlet msg = '⚠️ <b>Watchdog Alert</b>\\n\\n';\n\nfor (const check of data.checks) {\n  const emoji = {\n    'OK': '✅', 'ERROR': '❌', 'DOWN': '🔴',\n    'WARNING': '⚠️', 'STOPPED': '⛔', 'RUNNING': '🟢'\n  }[check.status] || '❓';\n  \n  msg += `${emoji} <b>${check.name}:</b> ${check.status}\\n`;\n  msg += `   ${check.detail}\\n\\n`;\n}\n\nif (!data.healthy) {\n  msg += '\\n🚨 <b>ВНИМАНИЕ: Система работает с ошибками!</b>\\n';\n  msg += 'Торговля приостановлена до устранения проблем.\\n';\n}\n\nmsg += `\\n⏱ ${new Date().toLocaleString('ru-RU', { timeZone: 'Europe/Moscow' })}`;\n\nreturn [{ json: { message: msg } }];"
+      },
+      "id": "format-alert",
+      "name": "Format Watchdog Alert",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [920, 400]
+    },
+    {
+      "parameters": {
+        "operation": "sendMessage",
+        "chatId": "={{ $env.TELEGRAM_CHAT_ID }}",
+        "text": "={{ $json.message }}",
+        "additionalFields": { "parse_mode": "HTML" }
+      },
+      "id": "send-alert",
+      "name": "TG: Watchdog Alert",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [1160, 400],
+      "credentials": {
+        "telegramApi": { "id": "TELEGRAM_CREDENTIALS_ID", "name": "Telegram Bot" }
+      }
+    }
+  ],
+  "connections": {
+    "Every 10 Minutes": {
+      "main": [[ { "node": "System Health Check", "type": "main", "index": 0 } ]]
+    },
+    "System Health Check": {
+      "main": [[ { "node": "System Unhealthy?", "type": "main", "index": 0 } ]]
+    },
+    "System Unhealthy?": {
+      "main": [[ { "node": "Format Watchdog Alert", "type": "main", "index": 0 } ]]
+    },
+    "Format Watchdog Alert": {
+      "main": [[ { "node": "TG: Watchdog Alert", "type": "main", "index": 0 } ]]
+    }
+  },
+  "settings": { "executionOrder": "v1" },
+  "tags": [{ "name": "gerchik-bot" }, { "name": "watchdog" }]
+}
