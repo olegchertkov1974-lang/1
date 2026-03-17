@@ -4,14 +4,22 @@
     {
       "parameters": {
         "rule": {
-          "interval": [{ "field": "minutes", "minutesInterval": 5 }]
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 5
+            }
+          ]
         }
       },
       "id": "cron-5m",
       "name": "Every 5 Minutes",
       "type": "n8n-nodes-base.scheduleTrigger",
       "typeVersion": 1.2,
-      "position": [200, 400]
+      "position": [
+        200,
+        400
+      ]
     },
     {
       "parameters": {
@@ -21,27 +29,42 @@
       "name": "Config",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [320, 400]
+      "position": [
+        320,
+        400
+      ]
     },
     {
       "parameters": {
-        "jsCode": "// =============================================\n// Check daily P&L and enforce risk limits\n// =============================================\nconst cfg = $getWorkflowStaticData('global');\nconst crypto = require('crypto');\n\nconst isTestnet = (cfg.BYBIT_TESTNET || 'true').toLowerCase() === 'true';\nconst baseUrl = isTestnet ? 'https://api-testnet.bybit.com' : 'https://api.bybit.com';\nconst apiKey = cfg.BYBIT_API_KEY;\nconst apiSecret = cfg.BYBIT_API_SECRET;\nconst MAX_DAILY_LOSS = parseFloat(cfg.MAX_DAILY_LOSS || '3');\n\nasync function signedGet(endpoint, params) {\n  const timestamp = Date.now().toString();\n  const recvWindow = '5000';\n  const qs = Object.entries(params).map(([k,v]) => `${k}=${v}`).join('&');\n  const preSign = timestamp + apiKey + recvWindow + qs;\n  const signature = crypto.createHmac('sha256', apiSecret).update(preSign).digest('hex');\n  return this.helpers.httpRequest({\n    method: 'GET',\n    url: `${baseUrl}${endpoint}?${qs}`,\n    headers: {\n      'X-BAPI-API-KEY': apiKey, 'X-BAPI-SIGN': signature,\n      'X-BAPI-TIMESTAMP': timestamp, 'X-BAPI-RECV-WINDOW': recvWindow,\n      'Content-Type': 'application/json'\n    }\n  });\n}\n\n// Get wallet balance\nconst balResp = await signedGet.call(this, '/v5/account/wallet-balance', { accountType: 'UNIFIED' });\nlet totalEquity = 0;\ntry {\n  totalEquity = parseFloat(balResp.result.list[0].totalEquity);\n} catch(e) {}\n\n// Get closed P&L for today\nconst today = new Date();\ntoday.setHours(0, 0, 0, 0);\nconst startTime = today.getTime().toString();\n\nlet dailyPnl = 0;\ntry {\n  const pnlResp = await signedGet.call(this, '/v5/position/closed-pnl', {\n    category: 'linear', startTime, limit: '100'\n  });\n  if (pnlResp.retCode === 0) {\n    dailyPnl = (pnlResp.result?.list || []).reduce((sum, p) => sum + parseFloat(p.closedPnl), 0);\n  }\n} catch(e) {}\n\n// Get unrealized P&L from open positions\nlet unrealizedPnl = 0;\ntry {\n  const posResp = await signedGet.call(this, '/v5/position/list', {\n    category: 'linear', settleCoin: 'USDT'\n  });\n  if (posResp.retCode === 0) {\n    unrealizedPnl = (posResp.result?.list || [])\n      .filter(p => parseFloat(p.size) > 0)\n      .reduce((sum, p) => sum + parseFloat(p.unrealisedPnl), 0);\n  }\n} catch(e) {}\n\nconst totalDailyPnl = dailyPnl + unrealizedPnl;\nconst dailyLossPercent = totalEquity > 0 ? Math.abs(Math.min(totalDailyPnl, 0)) / totalEquity * 100 : 0;\nconst breached = dailyLossPercent >= MAX_DAILY_LOSS;\n\n// Store daily loss for other workflows\nconst store = $getWorkflowStaticData('global');\nstore.dailyLoss = dailyLossPercent;\nstore.lastCheck = Date.now();\n\n// Reset daily loss tracker at midnight\nconst lastReset = store.lastReset || 0;\nif (Date.now() - lastReset > 24 * 60 * 60 * 1000) {\n  store.dailyLoss = 0;\n  store.lastReset = Date.now();\n}\n\nreturn [{\n  json: {\n    totalEquity,\n    dailyPnl: dailyPnl.toFixed(2),\n    unrealizedPnl: unrealizedPnl.toFixed(2),\n    totalDailyPnl: totalDailyPnl.toFixed(2),\n    dailyLossPercent: dailyLossPercent.toFixed(2),\n    maxDailyLoss: MAX_DAILY_LOSS,\n    breached,\n    baseUrl\n  }\n}];"
+        "jsCode": "// Pure JS SHA-256 + HMAC (n8n Cloud compatible)\nfunction sha256(b){const K=[0x428a2f98,0x71374491,0xb5c0fbcf,0xe9b5dba5,0x3956c25b,0x59f111f1,0x923f82a4,0xab1c5ed5,0xd807aa98,0x12835b01,0x243185be,0x550c7dc3,0x72be5d74,0x80deb1fe,0x9bdc06a7,0xc19bf174,0xe49b69c1,0xefbe4786,0x0fc19dc6,0x240ca1cc,0x2de92c6f,0x4a7484aa,0x5cb0a9dc,0x76f988da,0x983e5152,0xa831c66d,0xb00327c8,0xbf597fc7,0xc6e00bf3,0xd5a79147,0x06ca6351,0x14292967,0x27b70a85,0x2e1b2138,0x4d2c6dfc,0x53380d13,0x650a7354,0x766a0abb,0x81c2c92e,0x92722c85,0xa2bfe8a1,0xa81a664b,0xc24b8b70,0xc76c51a3,0xd192e819,0xd6990624,0xf40e3585,0x106aa070,0x19a4c116,0x1e376c08,0x2748774c,0x34b0bcb5,0x391c0cb3,0x4ed8aa4a,0x5b9cca4f,0x682e6ff3,0x748f82ee,0x78a5636f,0x84c87814,0x8cc70208,0x90befffa,0xa4506ceb,0xbef9a3f7,0xc67178f2];let h0=0x6a09e667,h1=0xbb67ae85,h2=0x3c6ef372,h3=0xa54ff53a,h4=0x510e527f,h5=0x9b05688c,h6=0x1f83d9ab,h7=0x5be0cd19;const m=b.slice();const bl=m.length*8;m.push(0x80);while((m.length+8)%64!==0)m.push(0);m.push(0,0,0,0,(bl>>>24)&0xff,(bl>>>16)&0xff,(bl>>>8)&0xff,bl&0xff);function rr(v,n){return((v>>>n)|(v<<(32-n)))>>>0;}for(let i=0;i<m.length;i+=64){const w=new Array(64);for(let j=0;j<16;j++)w[j]=((m[i+j*4]<<24)|(m[i+j*4+1]<<16)|(m[i+j*4+2]<<8)|m[i+j*4+3])>>>0;for(let j=16;j<64;j++){const s0=rr(w[j-15],7)^rr(w[j-15],18)^(w[j-15]>>>3);const s1=rr(w[j-2],17)^rr(w[j-2],19)^(w[j-2]>>>10);w[j]=(w[j-16]+s0+w[j-7]+s1)>>>0;}let a=h0,bb=h1,c=h2,d=h3,e=h4,f=h5,g=h6,hh=h7;for(let j=0;j<64;j++){const S1=rr(e,6)^rr(e,11)^rr(e,25);const ch=(e&f)^((~e>>>0)&g);const t1=(hh+S1+ch+K[j]+w[j])>>>0;const S0=rr(a,2)^rr(a,13)^rr(a,22);const maj=(a&bb)^(a&c)^(bb&c);const t2=(S0+maj)>>>0;hh=g;g=f;f=e;e=(d+t1)>>>0;d=c;c=bb;bb=a;a=(t1+t2)>>>0;}h0=(h0+a)>>>0;h1=(h1+bb)>>>0;h2=(h2+c)>>>0;h3=(h3+d)>>>0;h4=(h4+e)>>>0;h5=(h5+f)>>>0;h6=(h6+g)>>>0;h7=(h7+hh)>>>0;}const r=[];[h0,h1,h2,h3,h4,h5,h6,h7].forEach(v=>{r.push((v>>>24)&0xff,(v>>>16)&0xff,(v>>>8)&0xff,v&0xff);});return r;}\nfunction hmacSHA256(ks,ms){const toB=s=>Array.from(s).map(c=>c.charCodeAt(0));let k=toB(ks);if(k.length>64)k=sha256(k);while(k.length<64)k.push(0);return sha256([...k.map(b=>b^0x5c),...sha256([...k.map(b=>b^0x36),...toB(ms)])]).map(b=>b.toString(16).padStart(2,'0')).join('');}\n// =============================================\n// Check daily P&L and enforce risk limits\n// =============================================\nconst cfg = $getWorkflowStaticData('global');\n\nconst isTestnet = (cfg.BYBIT_TESTNET || 'true').toLowerCase() === 'true';\nconst baseUrl = isTestnet ? 'https://api-testnet.bybit.com' : 'https://api.bybit.com';\nconst apiKey = cfg.BYBIT_API_KEY;\nconst apiSecret = cfg.BYBIT_API_SECRET;\nconst MAX_DAILY_LOSS = parseFloat(cfg.MAX_DAILY_LOSS || '3');\n\nasync function signedGet(endpoint, params) {\n  const timestamp = Date.now().toString();\n  const recvWindow = '5000';\n  const qs = Object.entries(params).map(([k,v]) => `${k}=${v}`).join('&');\n  const preSign = timestamp + apiKey + recvWindow + qs;\n  const signature = hmacSHA256(apiSecret, preSign);\n  return this.helpers.httpRequest({\n    method: 'GET',\n    url: `${baseUrl}${endpoint}?${qs}`,\n    headers: {\n      'X-BAPI-API-KEY': apiKey, 'X-BAPI-SIGN': signature,\n      'X-BAPI-TIMESTAMP': timestamp, 'X-BAPI-RECV-WINDOW': recvWindow,\n      'Content-Type': 'application/json'\n    }\n  });\n}\n\n// Get wallet balance\nconst balResp = await signedGet.call(this, '/v5/account/wallet-balance', { accountType: 'UNIFIED' });\nlet totalEquity = 0;\ntry {\n  totalEquity = parseFloat(balResp.result.list[0].totalEquity);\n} catch(e) {}\n\n// Get closed P&L for today\nconst today = new Date();\ntoday.setHours(0, 0, 0, 0);\nconst startTime = today.getTime().toString();\n\nlet dailyPnl = 0;\ntry {\n  const pnlResp = await signedGet.call(this, '/v5/position/closed-pnl', {\n    category: 'linear', startTime, limit: '100'\n  });\n  if (pnlResp.retCode === 0) {\n    dailyPnl = (pnlResp.result?.list || []).reduce((sum, p) => sum + parseFloat(p.closedPnl), 0);\n  }\n} catch(e) {}\n\n// Get unrealized P&L from open positions\nlet unrealizedPnl = 0;\ntry {\n  const posResp = await signedGet.call(this, '/v5/position/list', {\n    category: 'linear', settleCoin: 'USDT'\n  });\n  if (posResp.retCode === 0) {\n    unrealizedPnl = (posResp.result?.list || [])\n      .filter(p => parseFloat(p.size) > 0)\n      .reduce((sum, p) => sum + parseFloat(p.unrealisedPnl), 0);\n  }\n} catch(e) {}\n\nconst totalDailyPnl = dailyPnl + unrealizedPnl;\nconst dailyLossPercent = totalEquity > 0 ? Math.abs(Math.min(totalDailyPnl, 0)) / totalEquity * 100 : 0;\nconst breached = dailyLossPercent >= MAX_DAILY_LOSS;\n\n// Store daily loss for other workflows\nconst store = $getWorkflowStaticData('global');\nstore.dailyLoss = dailyLossPercent;\nstore.lastCheck = Date.now();\n\n// Reset daily loss tracker at midnight\nconst lastReset = store.lastReset || 0;\nif (Date.now() - lastReset > 24 * 60 * 60 * 1000) {\n  store.dailyLoss = 0;\n  store.lastReset = Date.now();\n}\n\nreturn [{\n  json: {\n    totalEquity,\n    dailyPnl: dailyPnl.toFixed(2),\n    unrealizedPnl: unrealizedPnl.toFixed(2),\n    totalDailyPnl: totalDailyPnl.toFixed(2),\n    dailyLossPercent: dailyLossPercent.toFixed(2),\n    maxDailyLoss: MAX_DAILY_LOSS,\n    breached,\n    baseUrl\n  }\n}];"
       },
       "id": "check-pnl",
       "name": "Check Daily P&L",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [540, 400]
+      "position": [
+        540,
+        400
+      ]
     },
     {
       "parameters": {
         "conditions": {
-          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict" },
-          "conditions": [{
-            "leftValue": "={{ $json.breached }}",
-            "rightValue": true,
-            "operator": { "type": "boolean", "operation": "true" }
-          }],
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ $json.breached }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true"
+              }
+            }
+          ],
           "combinator": "and"
         },
         "options": {}
@@ -50,17 +73,23 @@
       "name": "Daily Limit Breached?",
       "type": "n8n-nodes-base.filter",
       "typeVersion": 2,
-      "position": [780, 400]
+      "position": [
+        780,
+        400
+      ]
     },
     {
       "parameters": {
-        "jsCode": "// =============================================\n// EMERGENCY: Close all positions\n// =============================================\nconst cfg = $getWorkflowStaticData('global');\nconst data = $input.first().json;\nconst crypto = require('crypto');\n\nconst apiKey = cfg.BYBIT_API_KEY;\nconst apiSecret = cfg.BYBIT_API_SECRET;\n\nasync function signedGet(endpoint, params) {\n  const timestamp = Date.now().toString();\n  const recvWindow = '5000';\n  const qs = Object.entries(params).map(([k,v]) => `${k}=${v}`).join('&');\n  const preSign = timestamp + apiKey + recvWindow + qs;\n  const signature = crypto.createHmac('sha256', apiSecret).update(preSign).digest('hex');\n  return this.helpers.httpRequest({\n    method: 'GET',\n    url: `${data.baseUrl}${endpoint}?${qs}`,\n    headers: {\n      'X-BAPI-API-KEY': apiKey, 'X-BAPI-SIGN': signature,\n      'X-BAPI-TIMESTAMP': timestamp, 'X-BAPI-RECV-WINDOW': recvWindow,\n      'Content-Type': 'application/json'\n    }\n  });\n}\n\nasync function signedPost(endpoint, body) {\n  const timestamp = Date.now().toString();\n  const recvWindow = '5000';\n  const bodyStr = JSON.stringify(body);\n  const preSign = timestamp + apiKey + recvWindow + bodyStr;\n  const signature = crypto.createHmac('sha256', apiSecret).update(preSign).digest('hex');\n  return this.helpers.httpRequest({\n    method: 'POST',\n    url: `${data.baseUrl}${endpoint}`,\n    headers: {\n      'X-BAPI-API-KEY': apiKey, 'X-BAPI-SIGN': signature,\n      'X-BAPI-TIMESTAMP': timestamp, 'X-BAPI-RECV-WINDOW': recvWindow,\n      'Content-Type': 'application/json'\n    },\n    body\n  });\n}\n\n// Cancel all open orders\ntry {\n  await signedPost.call(this, '/v5/order/cancel-all', {\n    category: 'linear', settleCoin: 'USDT'\n  });\n  await signedPost.call(this, '/v5/order/cancel-all', {\n    category: 'spot'\n  });\n} catch(e) {}\n\n// Close all positions\nconst closedPositions = [];\ntry {\n  const posResp = await signedGet.call(this, '/v5/position/list', {\n    category: 'linear', settleCoin: 'USDT'\n  });\n  if (posResp.retCode === 0) {\n    for (const pos of (posResp.result?.list || [])) {\n      if (parseFloat(pos.size) === 0) continue;\n      const closeSide = pos.side === 'Buy' ? 'Sell' : 'Buy';\n      try {\n        await signedPost.call(this, '/v5/order/create', {\n          category: 'linear',\n          symbol: pos.symbol,\n          side: closeSide,\n          orderType: 'Market',\n          qty: pos.size,\n          reduceOnly: true\n        });\n        closedPositions.push(pos.symbol);\n      } catch(e) {}\n    }\n  }\n} catch(e) {}\n\nreturn [{\n  json: {\n    ...data,\n    closedPositions,\n    closedCount: closedPositions.length\n  }\n}];"
+        "jsCode": "// Pure JS SHA-256 + HMAC (n8n Cloud compatible)\nfunction sha256(b){const K=[0x428a2f98,0x71374491,0xb5c0fbcf,0xe9b5dba5,0x3956c25b,0x59f111f1,0x923f82a4,0xab1c5ed5,0xd807aa98,0x12835b01,0x243185be,0x550c7dc3,0x72be5d74,0x80deb1fe,0x9bdc06a7,0xc19bf174,0xe49b69c1,0xefbe4786,0x0fc19dc6,0x240ca1cc,0x2de92c6f,0x4a7484aa,0x5cb0a9dc,0x76f988da,0x983e5152,0xa831c66d,0xb00327c8,0xbf597fc7,0xc6e00bf3,0xd5a79147,0x06ca6351,0x14292967,0x27b70a85,0x2e1b2138,0x4d2c6dfc,0x53380d13,0x650a7354,0x766a0abb,0x81c2c92e,0x92722c85,0xa2bfe8a1,0xa81a664b,0xc24b8b70,0xc76c51a3,0xd192e819,0xd6990624,0xf40e3585,0x106aa070,0x19a4c116,0x1e376c08,0x2748774c,0x34b0bcb5,0x391c0cb3,0x4ed8aa4a,0x5b9cca4f,0x682e6ff3,0x748f82ee,0x78a5636f,0x84c87814,0x8cc70208,0x90befffa,0xa4506ceb,0xbef9a3f7,0xc67178f2];let h0=0x6a09e667,h1=0xbb67ae85,h2=0x3c6ef372,h3=0xa54ff53a,h4=0x510e527f,h5=0x9b05688c,h6=0x1f83d9ab,h7=0x5be0cd19;const m=b.slice();const bl=m.length*8;m.push(0x80);while((m.length+8)%64!==0)m.push(0);m.push(0,0,0,0,(bl>>>24)&0xff,(bl>>>16)&0xff,(bl>>>8)&0xff,bl&0xff);function rr(v,n){return((v>>>n)|(v<<(32-n)))>>>0;}for(let i=0;i<m.length;i+=64){const w=new Array(64);for(let j=0;j<16;j++)w[j]=((m[i+j*4]<<24)|(m[i+j*4+1]<<16)|(m[i+j*4+2]<<8)|m[i+j*4+3])>>>0;for(let j=16;j<64;j++){const s0=rr(w[j-15],7)^rr(w[j-15],18)^(w[j-15]>>>3);const s1=rr(w[j-2],17)^rr(w[j-2],19)^(w[j-2]>>>10);w[j]=(w[j-16]+s0+w[j-7]+s1)>>>0;}let a=h0,bb=h1,c=h2,d=h3,e=h4,f=h5,g=h6,hh=h7;for(let j=0;j<64;j++){const S1=rr(e,6)^rr(e,11)^rr(e,25);const ch=(e&f)^((~e>>>0)&g);const t1=(hh+S1+ch+K[j]+w[j])>>>0;const S0=rr(a,2)^rr(a,13)^rr(a,22);const maj=(a&bb)^(a&c)^(bb&c);const t2=(S0+maj)>>>0;hh=g;g=f;f=e;e=(d+t1)>>>0;d=c;c=bb;bb=a;a=(t1+t2)>>>0;}h0=(h0+a)>>>0;h1=(h1+bb)>>>0;h2=(h2+c)>>>0;h3=(h3+d)>>>0;h4=(h4+e)>>>0;h5=(h5+f)>>>0;h6=(h6+g)>>>0;h7=(h7+hh)>>>0;}const r=[];[h0,h1,h2,h3,h4,h5,h6,h7].forEach(v=>{r.push((v>>>24)&0xff,(v>>>16)&0xff,(v>>>8)&0xff,v&0xff);});return r;}\nfunction hmacSHA256(ks,ms){const toB=s=>Array.from(s).map(c=>c.charCodeAt(0));let k=toB(ks);if(k.length>64)k=sha256(k);while(k.length<64)k.push(0);return sha256([...k.map(b=>b^0x5c),...sha256([...k.map(b=>b^0x36),...toB(ms)])]).map(b=>b.toString(16).padStart(2,'0')).join('');}\n// =============================================\n// EMERGENCY: Close all positions\n// =============================================\nconst cfg = $getWorkflowStaticData('global');\nconst data = $input.first().json;\n\nconst apiKey = cfg.BYBIT_API_KEY;\nconst apiSecret = cfg.BYBIT_API_SECRET;\n\nasync function signedGet(endpoint, params) {\n  const timestamp = Date.now().toString();\n  const recvWindow = '5000';\n  const qs = Object.entries(params).map(([k,v]) => `${k}=${v}`).join('&');\n  const preSign = timestamp + apiKey + recvWindow + qs;\n  const signature = hmacSHA256(apiSecret, preSign);\n  return this.helpers.httpRequest({\n    method: 'GET',\n    url: `${data.baseUrl}${endpoint}?${qs}`,\n    headers: {\n      'X-BAPI-API-KEY': apiKey, 'X-BAPI-SIGN': signature,\n      'X-BAPI-TIMESTAMP': timestamp, 'X-BAPI-RECV-WINDOW': recvWindow,\n      'Content-Type': 'application/json'\n    }\n  });\n}\n\nasync function signedPost(endpoint, body) {\n  const timestamp = Date.now().toString();\n  const recvWindow = '5000';\n  const bodyStr = JSON.stringify(body);\n  const preSign = timestamp + apiKey + recvWindow + bodyStr;\n  const signature = hmacSHA256(apiSecret, preSign);\n  return this.helpers.httpRequest({\n    method: 'POST',\n    url: `${data.baseUrl}${endpoint}`,\n    headers: {\n      'X-BAPI-API-KEY': apiKey, 'X-BAPI-SIGN': signature,\n      'X-BAPI-TIMESTAMP': timestamp, 'X-BAPI-RECV-WINDOW': recvWindow,\n      'Content-Type': 'application/json'\n    },\n    body\n  });\n}\n\n// Cancel all open orders\ntry {\n  await signedPost.call(this, '/v5/order/cancel-all', {\n    category: 'linear', settleCoin: 'USDT'\n  });\n  await signedPost.call(this, '/v5/order/cancel-all', {\n    category: 'spot'\n  });\n} catch(e) {}\n\n// Close all positions\nconst closedPositions = [];\ntry {\n  const posResp = await signedGet.call(this, '/v5/position/list', {\n    category: 'linear', settleCoin: 'USDT'\n  });\n  if (posResp.retCode === 0) {\n    for (const pos of (posResp.result?.list || [])) {\n      if (parseFloat(pos.size) === 0) continue;\n      const closeSide = pos.side === 'Buy' ? 'Sell' : 'Buy';\n      try {\n        await signedPost.call(this, '/v5/order/create', {\n          category: 'linear',\n          symbol: pos.symbol,\n          side: closeSide,\n          orderType: 'Market',\n          qty: pos.size,\n          reduceOnly: true\n        });\n        closedPositions.push(pos.symbol);\n      } catch(e) {}\n    }\n  }\n} catch(e) {}\n\nreturn [{\n  json: {\n    ...data,\n    closedPositions,\n    closedCount: closedPositions.length\n  }\n}];"
       },
       "id": "emergency-close",
       "name": "EMERGENCY: Close All",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [1020, 400]
+      "position": [
+        1020,
+        400
+      ]
     },
     {
       "parameters": {
@@ -70,45 +99,113 @@
       "name": "Format ALERT",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [1260, 400]
+      "position": [
+        1260,
+        400
+      ]
     },
     {
       "parameters": {
         "operation": "sendMessage",
         "chatId": "={{ $getWorkflowStaticData('global').TELEGRAM_CHAT_ID }}",
         "text": "={{ $json.message }}",
-        "additionalFields": { "parse_mode": "HTML" }
+        "additionalFields": {
+          "parse_mode": "HTML"
+        }
       },
       "id": "send-alert",
       "name": "TG: EMERGENCY ALERT",
       "type": "n8n-nodes-base.telegram",
       "typeVersion": 1.2,
-      "position": [1500, 400],
+      "position": [
+        1500,
+        400
+      ],
       "credentials": {
-        "telegramApi": { "id": "TELEGRAM_CREDENTIALS_ID", "name": "Telegram Bot" }
+        "telegramApi": {
+          "id": "TELEGRAM_CREDENTIALS_ID",
+          "name": "Telegram Bot"
+        }
       }
     }
   ],
   "connections": {
     "Every 5 Minutes": {
-      "main": [[ { "node": "Config", "type": "main", "index": 0 } ]]
+      "main": [
+        [
+          {
+            "node": "Config",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     },
     "Config": {
-      "main": [[ { "node": "Check Daily P&L", "type": "main", "index": 0 } ]]
+      "main": [
+        [
+          {
+            "node": "Check Daily P&L",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     },
     "Check Daily P&L": {
-      "main": [[ { "node": "Daily Limit Breached?", "type": "main", "index": 0 } ]]
+      "main": [
+        [
+          {
+            "node": "Daily Limit Breached?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     },
     "Daily Limit Breached?": {
-      "main": [[ { "node": "EMERGENCY: Close All", "type": "main", "index": 0 } ]]
+      "main": [
+        [
+          {
+            "node": "EMERGENCY: Close All",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     },
     "EMERGENCY: Close All": {
-      "main": [[ { "node": "Format ALERT", "type": "main", "index": 0 } ]]
+      "main": [
+        [
+          {
+            "node": "Format ALERT",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     },
     "Format ALERT": {
-      "main": [[ { "node": "TG: EMERGENCY ALERT", "type": "main", "index": 0 } ]]
+      "main": [
+        [
+          {
+            "node": "TG: EMERGENCY ALERT",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     }
   },
-  "settings": { "executionOrder": "v1" },
-  "tags": [{ "name": "gerchik-bot" }, { "name": "risk" }]
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "tags": [
+    {
+      "name": "gerchik-bot"
+    },
+    {
+      "name": "risk"
+    }
+  ]
 }

@@ -4,14 +4,22 @@
     {
       "parameters": {
         "rule": {
-          "interval": [{ "field": "minutes", "minutesInterval": 1 }]
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 1
+            }
+          ]
         }
       },
       "id": "cron-1m",
       "name": "Every 1 Minute",
       "type": "n8n-nodes-base.scheduleTrigger",
       "typeVersion": 1.2,
-      "position": [200, 400]
+      "position": [
+        200,
+        400
+      ]
     },
     {
       "parameters": {
@@ -21,17 +29,23 @@
       "name": "Config",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [320, 400]
+      "position": [
+        320,
+        400
+      ]
     },
     {
       "parameters": {
-        "jsCode": "// =============================================\n// STEP 1: Get all open positions from Bybit\n// =============================================\nconst cfg = $getWorkflowStaticData('global');\nconst crypto = require('crypto');\n\nconst isTestnet = (cfg.BYBIT_TESTNET || 'true').toLowerCase() === 'true';\nconst baseUrl = isTestnet ? 'https://api-testnet.bybit.com' : 'https://api.bybit.com';\nconst apiKey = cfg.BYBIT_API_KEY;\nconst apiSecret = cfg.BYBIT_API_SECRET;\n\nasync function signedGet(endpoint, params) {\n  const timestamp = Date.now().toString();\n  const recvWindow = '5000';\n  const qs = Object.entries(params).map(([k,v]) => `${k}=${v}`).join('&');\n  const preSign = timestamp + apiKey + recvWindow + qs;\n  const signature = crypto.createHmac('sha256', apiSecret).update(preSign).digest('hex');\n  return this.helpers.httpRequest({\n    method: 'GET',\n    url: `${baseUrl}${endpoint}?${qs}`,\n    headers: {\n      'X-BAPI-API-KEY': apiKey, 'X-BAPI-SIGN': signature,\n      'X-BAPI-TIMESTAMP': timestamp, 'X-BAPI-RECV-WINDOW': recvWindow,\n      'Content-Type': 'application/json'\n    }\n  });\n}\n\n// Get futures positions\nlet positions = [];\ntry {\n  const posResp = await signedGet.call(this, '/v5/position/list', {\n    category: 'linear', settleCoin: 'USDT'\n  });\n  if (posResp.retCode === 0) {\n    positions = (posResp.result?.list || []).filter(p => parseFloat(p.size) > 0);\n  }\n} catch(e) { /* no positions */ }\n\n// Get open spot orders\nlet spotOrders = [];\ntry {\n  const ordResp = await signedGet.call(this, '/v5/order/realtime', {\n    category: 'spot', settleCoin: 'USDT'\n  });\n  if (ordResp.retCode === 0) {\n    spotOrders = ordResp.result?.list || [];\n  }\n} catch(e) { /* no orders */ }\n\nif (positions.length === 0 && spotOrders.length === 0) {\n  return []; // No positions — skip execution\n}\n\nconst allPositions = positions.map(p => ({\n  symbol: p.symbol,\n  side: p.side,\n  size: parseFloat(p.size),\n  entryPrice: parseFloat(p.avgPrice),\n  markPrice: parseFloat(p.markPrice),\n  unrealizedPnl: parseFloat(p.unrealisedPnl),\n  stopLoss: parseFloat(p.stopLoss || '0'),\n  takeProfit: parseFloat(p.takeProfit || '0'),\n  category: 'linear',\n  baseUrl\n}));\n\nreturn allPositions.map(p => ({ json: p }));"
+        "jsCode": "// Pure JS SHA-256 + HMAC (n8n Cloud compatible)\nfunction sha256(b){const K=[0x428a2f98,0x71374491,0xb5c0fbcf,0xe9b5dba5,0x3956c25b,0x59f111f1,0x923f82a4,0xab1c5ed5,0xd807aa98,0x12835b01,0x243185be,0x550c7dc3,0x72be5d74,0x80deb1fe,0x9bdc06a7,0xc19bf174,0xe49b69c1,0xefbe4786,0x0fc19dc6,0x240ca1cc,0x2de92c6f,0x4a7484aa,0x5cb0a9dc,0x76f988da,0x983e5152,0xa831c66d,0xb00327c8,0xbf597fc7,0xc6e00bf3,0xd5a79147,0x06ca6351,0x14292967,0x27b70a85,0x2e1b2138,0x4d2c6dfc,0x53380d13,0x650a7354,0x766a0abb,0x81c2c92e,0x92722c85,0xa2bfe8a1,0xa81a664b,0xc24b8b70,0xc76c51a3,0xd192e819,0xd6990624,0xf40e3585,0x106aa070,0x19a4c116,0x1e376c08,0x2748774c,0x34b0bcb5,0x391c0cb3,0x4ed8aa4a,0x5b9cca4f,0x682e6ff3,0x748f82ee,0x78a5636f,0x84c87814,0x8cc70208,0x90befffa,0xa4506ceb,0xbef9a3f7,0xc67178f2];let h0=0x6a09e667,h1=0xbb67ae85,h2=0x3c6ef372,h3=0xa54ff53a,h4=0x510e527f,h5=0x9b05688c,h6=0x1f83d9ab,h7=0x5be0cd19;const m=b.slice();const bl=m.length*8;m.push(0x80);while((m.length+8)%64!==0)m.push(0);m.push(0,0,0,0,(bl>>>24)&0xff,(bl>>>16)&0xff,(bl>>>8)&0xff,bl&0xff);function rr(v,n){return((v>>>n)|(v<<(32-n)))>>>0;}for(let i=0;i<m.length;i+=64){const w=new Array(64);for(let j=0;j<16;j++)w[j]=((m[i+j*4]<<24)|(m[i+j*4+1]<<16)|(m[i+j*4+2]<<8)|m[i+j*4+3])>>>0;for(let j=16;j<64;j++){const s0=rr(w[j-15],7)^rr(w[j-15],18)^(w[j-15]>>>3);const s1=rr(w[j-2],17)^rr(w[j-2],19)^(w[j-2]>>>10);w[j]=(w[j-16]+s0+w[j-7]+s1)>>>0;}let a=h0,bb=h1,c=h2,d=h3,e=h4,f=h5,g=h6,hh=h7;for(let j=0;j<64;j++){const S1=rr(e,6)^rr(e,11)^rr(e,25);const ch=(e&f)^((~e>>>0)&g);const t1=(hh+S1+ch+K[j]+w[j])>>>0;const S0=rr(a,2)^rr(a,13)^rr(a,22);const maj=(a&bb)^(a&c)^(bb&c);const t2=(S0+maj)>>>0;hh=g;g=f;f=e;e=(d+t1)>>>0;d=c;c=bb;bb=a;a=(t1+t2)>>>0;}h0=(h0+a)>>>0;h1=(h1+bb)>>>0;h2=(h2+c)>>>0;h3=(h3+d)>>>0;h4=(h4+e)>>>0;h5=(h5+f)>>>0;h6=(h6+g)>>>0;h7=(h7+hh)>>>0;}const r=[];[h0,h1,h2,h3,h4,h5,h6,h7].forEach(v=>{r.push((v>>>24)&0xff,(v>>>16)&0xff,(v>>>8)&0xff,v&0xff);});return r;}\nfunction hmacSHA256(ks,ms){const toB=s=>Array.from(s).map(c=>c.charCodeAt(0));let k=toB(ks);if(k.length>64)k=sha256(k);while(k.length<64)k.push(0);return sha256([...k.map(b=>b^0x5c),...sha256([...k.map(b=>b^0x36),...toB(ms)])]).map(b=>b.toString(16).padStart(2,'0')).join('');}\n// =============================================\n// STEP 1: Get all open positions from Bybit\n// =============================================\nconst cfg = $getWorkflowStaticData('global');\n\nconst isTestnet = (cfg.BYBIT_TESTNET || 'true').toLowerCase() === 'true';\nconst baseUrl = isTestnet ? 'https://api-testnet.bybit.com' : 'https://api.bybit.com';\nconst apiKey = cfg.BYBIT_API_KEY;\nconst apiSecret = cfg.BYBIT_API_SECRET;\n\nasync function signedGet(endpoint, params) {\n  const timestamp = Date.now().toString();\n  const recvWindow = '5000';\n  const qs = Object.entries(params).map(([k,v]) => `${k}=${v}`).join('&');\n  const preSign = timestamp + apiKey + recvWindow + qs;\n  const signature = hmacSHA256(apiSecret, preSign);\n  return this.helpers.httpRequest({\n    method: 'GET',\n    url: `${baseUrl}${endpoint}?${qs}`,\n    headers: {\n      'X-BAPI-API-KEY': apiKey, 'X-BAPI-SIGN': signature,\n      'X-BAPI-TIMESTAMP': timestamp, 'X-BAPI-RECV-WINDOW': recvWindow,\n      'Content-Type': 'application/json'\n    }\n  });\n}\n\n// Get futures positions\nlet positions = [];\ntry {\n  const posResp = await signedGet.call(this, '/v5/position/list', {\n    category: 'linear', settleCoin: 'USDT'\n  });\n  if (posResp.retCode === 0) {\n    positions = (posResp.result?.list || []).filter(p => parseFloat(p.size) > 0);\n  }\n} catch(e) { /* no positions */ }\n\n// Get open spot orders\nlet spotOrders = [];\ntry {\n  const ordResp = await signedGet.call(this, '/v5/order/realtime', {\n    category: 'spot', settleCoin: 'USDT'\n  });\n  if (ordResp.retCode === 0) {\n    spotOrders = ordResp.result?.list || [];\n  }\n} catch(e) { /* no orders */ }\n\nif (positions.length === 0 && spotOrders.length === 0) {\n  return []; // No positions — skip execution\n}\n\nconst allPositions = positions.map(p => ({\n  symbol: p.symbol,\n  side: p.side,\n  size: parseFloat(p.size),\n  entryPrice: parseFloat(p.avgPrice),\n  markPrice: parseFloat(p.markPrice),\n  unrealizedPnl: parseFloat(p.unrealisedPnl),\n  stopLoss: parseFloat(p.stopLoss || '0'),\n  takeProfit: parseFloat(p.takeProfit || '0'),\n  category: 'linear',\n  baseUrl\n}));\n\nreturn allPositions.map(p => ({ json: p }));"
       },
       "id": "get-positions",
       "name": "Get Open Positions",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [540, 400]
+      "position": [
+        540,
+        400
+      ]
     },
     {
       "parameters": {
@@ -41,7 +55,10 @@
       "name": "Fetch Position Data",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [780, 400]
+      "position": [
+        780,
+        400
+      ]
     },
     {
       "parameters": {
@@ -51,17 +68,29 @@
       "name": "Claude: Manage Position",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [1020, 400]
+      "position": [
+        1020,
+        400
+      ]
     },
     {
       "parameters": {
         "conditions": {
-          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict" },
-          "conditions": [{
-            "leftValue": "={{ $json._decision.action }}",
-            "rightValue": "HOLD",
-            "operator": { "type": "string", "operation": "notEquals" }
-          }],
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ $json._decision.action }}",
+              "rightValue": "HOLD",
+              "operator": {
+                "type": "string",
+                "operation": "notEquals"
+              }
+            }
+          ],
           "combinator": "and"
         },
         "options": {}
@@ -70,17 +99,23 @@
       "name": "Action Needed?",
       "type": "n8n-nodes-base.filter",
       "typeVersion": 2,
-      "position": [1260, 400]
+      "position": [
+        1260,
+        400
+      ]
     },
     {
       "parameters": {
-        "jsCode": "// =============================================\n// STEP 4: Execute position management action\n// =============================================\nconst cfg = $getWorkflowStaticData('global');\nconst data = $input.first().json;\nconst decision = data._decision;\nconst crypto = require('crypto');\n\nconst apiKey = cfg.BYBIT_API_KEY;\nconst apiSecret = cfg.BYBIT_API_SECRET;\n\nasync function signedPost(endpoint, body) {\n  const timestamp = Date.now().toString();\n  const recvWindow = '5000';\n  const bodyStr = JSON.stringify(body);\n  const preSign = timestamp + apiKey + recvWindow + bodyStr;\n  const signature = crypto.createHmac('sha256', apiSecret).update(preSign).digest('hex');\n  return this.helpers.httpRequest({\n    method: 'POST',\n    url: `${data.baseUrl}${endpoint}`,\n    headers: {\n      'X-BAPI-API-KEY': apiKey, 'X-BAPI-SIGN': signature,\n      'X-BAPI-TIMESTAMP': timestamp, 'X-BAPI-RECV-WINDOW': recvWindow,\n      'Content-Type': 'application/json'\n    },\n    body\n  });\n}\n\nlet result = { action: decision.action, success: false };\n\ntry {\n  if (decision.action === 'MOVE_STOP' && decision.new_stop_loss) {\n    // Move stop loss\n    const resp = await signedPost.call(this, '/v5/position/trading-stop', {\n      category: data.category,\n      symbol: data.symbol,\n      stopLoss: decision.new_stop_loss.toString(),\n      tpslMode: 'Full'\n    });\n    result.success = resp.retCode === 0;\n    result.newStopLoss = decision.new_stop_loss;\n    result.retMsg = resp.retMsg;\n  }\n  \n  if (decision.action === 'PARTIAL_CLOSE' && decision.close_percent > 0) {\n    // Close partial position\n    const closeQty = (data.size * decision.close_percent / 100).toFixed(6);\n    const closeSide = data.side === 'Buy' ? 'Sell' : 'Buy';\n    const resp = await signedPost.call(this, '/v5/order/create', {\n      category: data.category,\n      symbol: data.symbol,\n      side: closeSide,\n      orderType: 'Market',\n      qty: closeQty,\n      reduceOnly: true\n    });\n    result.success = resp.retCode === 0;\n    result.closedQty = closeQty;\n    result.closePercent = decision.close_percent;\n    result.retMsg = resp.retMsg;\n  }\n  \n  if (decision.action === 'FULL_CLOSE') {\n    // Close entire position\n    const closeSide = data.side === 'Buy' ? 'Sell' : 'Buy';\n    const resp = await signedPost.call(this, '/v5/order/create', {\n      category: data.category,\n      symbol: data.symbol,\n      side: closeSide,\n      orderType: 'Market',\n      qty: data.size.toString(),\n      reduceOnly: true\n    });\n    result.success = resp.retCode === 0;\n    result.retMsg = resp.retMsg;\n  }\n} catch(e) {\n  result.error = e.message;\n}\n\nreturn [{ json: { ...data, _result: result } }];"
+        "jsCode": "// Pure JS SHA-256 + HMAC (n8n Cloud compatible)\nfunction sha256(b){const K=[0x428a2f98,0x71374491,0xb5c0fbcf,0xe9b5dba5,0x3956c25b,0x59f111f1,0x923f82a4,0xab1c5ed5,0xd807aa98,0x12835b01,0x243185be,0x550c7dc3,0x72be5d74,0x80deb1fe,0x9bdc06a7,0xc19bf174,0xe49b69c1,0xefbe4786,0x0fc19dc6,0x240ca1cc,0x2de92c6f,0x4a7484aa,0x5cb0a9dc,0x76f988da,0x983e5152,0xa831c66d,0xb00327c8,0xbf597fc7,0xc6e00bf3,0xd5a79147,0x06ca6351,0x14292967,0x27b70a85,0x2e1b2138,0x4d2c6dfc,0x53380d13,0x650a7354,0x766a0abb,0x81c2c92e,0x92722c85,0xa2bfe8a1,0xa81a664b,0xc24b8b70,0xc76c51a3,0xd192e819,0xd6990624,0xf40e3585,0x106aa070,0x19a4c116,0x1e376c08,0x2748774c,0x34b0bcb5,0x391c0cb3,0x4ed8aa4a,0x5b9cca4f,0x682e6ff3,0x748f82ee,0x78a5636f,0x84c87814,0x8cc70208,0x90befffa,0xa4506ceb,0xbef9a3f7,0xc67178f2];let h0=0x6a09e667,h1=0xbb67ae85,h2=0x3c6ef372,h3=0xa54ff53a,h4=0x510e527f,h5=0x9b05688c,h6=0x1f83d9ab,h7=0x5be0cd19;const m=b.slice();const bl=m.length*8;m.push(0x80);while((m.length+8)%64!==0)m.push(0);m.push(0,0,0,0,(bl>>>24)&0xff,(bl>>>16)&0xff,(bl>>>8)&0xff,bl&0xff);function rr(v,n){return((v>>>n)|(v<<(32-n)))>>>0;}for(let i=0;i<m.length;i+=64){const w=new Array(64);for(let j=0;j<16;j++)w[j]=((m[i+j*4]<<24)|(m[i+j*4+1]<<16)|(m[i+j*4+2]<<8)|m[i+j*4+3])>>>0;for(let j=16;j<64;j++){const s0=rr(w[j-15],7)^rr(w[j-15],18)^(w[j-15]>>>3);const s1=rr(w[j-2],17)^rr(w[j-2],19)^(w[j-2]>>>10);w[j]=(w[j-16]+s0+w[j-7]+s1)>>>0;}let a=h0,bb=h1,c=h2,d=h3,e=h4,f=h5,g=h6,hh=h7;for(let j=0;j<64;j++){const S1=rr(e,6)^rr(e,11)^rr(e,25);const ch=(e&f)^((~e>>>0)&g);const t1=(hh+S1+ch+K[j]+w[j])>>>0;const S0=rr(a,2)^rr(a,13)^rr(a,22);const maj=(a&bb)^(a&c)^(bb&c);const t2=(S0+maj)>>>0;hh=g;g=f;f=e;e=(d+t1)>>>0;d=c;c=bb;bb=a;a=(t1+t2)>>>0;}h0=(h0+a)>>>0;h1=(h1+bb)>>>0;h2=(h2+c)>>>0;h3=(h3+d)>>>0;h4=(h4+e)>>>0;h5=(h5+f)>>>0;h6=(h6+g)>>>0;h7=(h7+hh)>>>0;}const r=[];[h0,h1,h2,h3,h4,h5,h6,h7].forEach(v=>{r.push((v>>>24)&0xff,(v>>>16)&0xff,(v>>>8)&0xff,v&0xff);});return r;}\nfunction hmacSHA256(ks,ms){const toB=s=>Array.from(s).map(c=>c.charCodeAt(0));let k=toB(ks);if(k.length>64)k=sha256(k);while(k.length<64)k.push(0);return sha256([...k.map(b=>b^0x5c),...sha256([...k.map(b=>b^0x36),...toB(ms)])]).map(b=>b.toString(16).padStart(2,'0')).join('');}\n// =============================================\n// STEP 4: Execute position management action\n// =============================================\nconst cfg = $getWorkflowStaticData('global');\nconst data = $input.first().json;\nconst decision = data._decision;\n\nconst apiKey = cfg.BYBIT_API_KEY;\nconst apiSecret = cfg.BYBIT_API_SECRET;\n\nasync function signedPost(endpoint, body) {\n  const timestamp = Date.now().toString();\n  const recvWindow = '5000';\n  const bodyStr = JSON.stringify(body);\n  const preSign = timestamp + apiKey + recvWindow + bodyStr;\n  const signature = hmacSHA256(apiSecret, preSign);\n  return this.helpers.httpRequest({\n    method: 'POST',\n    url: `${data.baseUrl}${endpoint}`,\n    headers: {\n      'X-BAPI-API-KEY': apiKey, 'X-BAPI-SIGN': signature,\n      'X-BAPI-TIMESTAMP': timestamp, 'X-BAPI-RECV-WINDOW': recvWindow,\n      'Content-Type': 'application/json'\n    },\n    body\n  });\n}\n\nlet result = { action: decision.action, success: false };\n\ntry {\n  if (decision.action === 'MOVE_STOP' && decision.new_stop_loss) {\n    // Move stop loss\n    const resp = await signedPost.call(this, '/v5/position/trading-stop', {\n      category: data.category,\n      symbol: data.symbol,\n      stopLoss: decision.new_stop_loss.toString(),\n      tpslMode: 'Full'\n    });\n    result.success = resp.retCode === 0;\n    result.newStopLoss = decision.new_stop_loss;\n    result.retMsg = resp.retMsg;\n  }\n  \n  if (decision.action === 'PARTIAL_CLOSE' && decision.close_percent > 0) {\n    // Close partial position\n    const closeQty = (data.size * decision.close_percent / 100).toFixed(6);\n    const closeSide = data.side === 'Buy' ? 'Sell' : 'Buy';\n    const resp = await signedPost.call(this, '/v5/order/create', {\n      category: data.category,\n      symbol: data.symbol,\n      side: closeSide,\n      orderType: 'Market',\n      qty: closeQty,\n      reduceOnly: true\n    });\n    result.success = resp.retCode === 0;\n    result.closedQty = closeQty;\n    result.closePercent = decision.close_percent;\n    result.retMsg = resp.retMsg;\n  }\n  \n  if (decision.action === 'FULL_CLOSE') {\n    // Close entire position\n    const closeSide = data.side === 'Buy' ? 'Sell' : 'Buy';\n    const resp = await signedPost.call(this, '/v5/order/create', {\n      category: data.category,\n      symbol: data.symbol,\n      side: closeSide,\n      orderType: 'Market',\n      qty: data.size.toString(),\n      reduceOnly: true\n    });\n    result.success = resp.retCode === 0;\n    result.retMsg = resp.retMsg;\n  }\n} catch(e) {\n  result.error = e.message;\n}\n\nreturn [{ json: { ...data, _result: result } }];"
       },
       "id": "execute-action",
       "name": "Execute Position Action",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [1500, 400]
+      "position": [
+        1500,
+        400
+      ]
     },
     {
       "parameters": {
@@ -90,51 +125,135 @@
       "name": "Format Notification",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [1740, 400]
+      "position": [
+        1740,
+        400
+      ]
     },
     {
       "parameters": {
         "operation": "sendMessage",
         "chatId": "={{ $getWorkflowStaticData('global').TELEGRAM_CHAT_ID }}",
         "text": "={{ $json.message }}",
-        "additionalFields": { "parse_mode": "HTML" }
+        "additionalFields": {
+          "parse_mode": "HTML"
+        }
       },
       "id": "send-tg",
       "name": "Send to Telegram",
       "type": "n8n-nodes-base.telegram",
       "typeVersion": 1.2,
-      "position": [1980, 400],
+      "position": [
+        1980,
+        400
+      ],
       "credentials": {
-        "telegramApi": { "id": "TELEGRAM_CREDENTIALS_ID", "name": "Telegram Bot" }
+        "telegramApi": {
+          "id": "TELEGRAM_CREDENTIALS_ID",
+          "name": "Telegram Bot"
+        }
       }
     }
   ],
   "connections": {
     "Every 1 Minute": {
-      "main": [[ { "node": "Config", "type": "main", "index": 0 } ]]
+      "main": [
+        [
+          {
+            "node": "Config",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     },
     "Config": {
-      "main": [[ { "node": "Get Open Positions", "type": "main", "index": 0 } ]]
+      "main": [
+        [
+          {
+            "node": "Get Open Positions",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     },
     "Get Open Positions": {
-      "main": [[ { "node": "Fetch Position Data", "type": "main", "index": 0 } ]]
+      "main": [
+        [
+          {
+            "node": "Fetch Position Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     },
     "Fetch Position Data": {
-      "main": [[ { "node": "Claude: Manage Position", "type": "main", "index": 0 } ]]
+      "main": [
+        [
+          {
+            "node": "Claude: Manage Position",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     },
     "Claude: Manage Position": {
-      "main": [[ { "node": "Action Needed?", "type": "main", "index": 0 } ]]
+      "main": [
+        [
+          {
+            "node": "Action Needed?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     },
     "Action Needed?": {
-      "main": [[ { "node": "Execute Position Action", "type": "main", "index": 0 } ]]
+      "main": [
+        [
+          {
+            "node": "Execute Position Action",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     },
     "Execute Position Action": {
-      "main": [[ { "node": "Format Notification", "type": "main", "index": 0 } ]]
+      "main": [
+        [
+          {
+            "node": "Format Notification",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     },
     "Format Notification": {
-      "main": [[ { "node": "Send to Telegram", "type": "main", "index": 0 } ]]
+      "main": [
+        [
+          {
+            "node": "Send to Telegram",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     }
   },
-  "settings": { "executionOrder": "v1" },
-  "tags": [{ "name": "gerchik-bot" }, { "name": "position-mgmt" }]
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "tags": [
+    {
+      "name": "gerchik-bot"
+    },
+    {
+      "name": "position-mgmt"
+    }
+  ]
 }

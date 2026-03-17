@@ -4,14 +4,22 @@
     {
       "parameters": {
         "rule": {
-          "interval": [{ "field": "minutes", "minutesInterval": 15 }]
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 15
+            }
+          ]
         }
       },
       "id": "cron-15m",
       "name": "Every 15 Minutes",
       "type": "n8n-nodes-base.scheduleTrigger",
       "typeVersion": 1.2,
-      "position": [200, 400]
+      "position": [
+        200,
+        400
+      ]
     },
     {
       "parameters": {
@@ -21,17 +29,23 @@
       "name": "Config",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [320, 400]
+      "position": [
+        320,
+        400
+      ]
     },
     {
       "parameters": {
-        "jsCode": "// =============================================\n// STEP 1: Get top trading pairs by 24h volume\n// =============================================\nconst cfg = $getWorkflowStaticData('global');\nconst crypto = require('crypto');\n\n// Check if bot is stopped\nconst store = $getWorkflowStaticData('global');\nif (store.botStopped) {\n  return []; // Bot is stopped, skip scanning\n}\n\nconst isTestnet = (cfg.BYBIT_TESTNET || 'true').toLowerCase() === 'true';\nconst baseUrl = isTestnet ? 'https://api-testnet.bybit.com' : 'https://api.bybit.com';\nconst MIN_VOLUME = parseFloat(cfg.MIN_VOLUME_24H || '50000000');\n\n// Fetch spot tickers\nconst spotResponse = await this.helpers.httpRequest({\n  method: 'GET',\n  url: `${baseUrl}/v5/market/tickers?category=spot`\n});\n\nif (spotResponse.retCode !== 0) {\n  throw new Error(`Bybit API error: ${spotResponse.retMsg}`);\n}\n\n// Filter USDT pairs with volume > $50M, sort by volume\nconst pairs = spotResponse.result.list\n  .filter(t => t.symbol.endsWith('USDT'))\n  .map(t => ({\n    symbol: t.symbol,\n    lastPrice: parseFloat(t.lastPrice),\n    volume24h: parseFloat(t.turnover24h),\n    change24h: parseFloat(t.price24hPcnt) * 100\n  }))\n  .filter(t => t.volume24h >= MIN_VOLUME)\n  .sort((a, b) => b.volume24h - a.volume24h)\n  .slice(0, 20); // Top 20 pairs\n\nreturn pairs.map(p => ({ json: { ...p, baseUrl } }));"
+        "jsCode": "// =============================================\n// STEP 1: Get top trading pairs by 24h volume\n// =============================================\nconst cfg = $getWorkflowStaticData('global');\n\n// Check if bot is stopped\nconst store = $getWorkflowStaticData('global');\nif (store.botStopped) {\n  return []; // Bot is stopped, skip scanning\n}\n\nconst isTestnet = (cfg.BYBIT_TESTNET || 'true').toLowerCase() === 'true';\nconst baseUrl = isTestnet ? 'https://api-testnet.bybit.com' : 'https://api.bybit.com';\nconst MIN_VOLUME = parseFloat(cfg.MIN_VOLUME_24H || '50000000');\n\n// Fetch spot tickers\nconst spotResponse = await this.helpers.httpRequest({\n  method: 'GET',\n  url: `${baseUrl}/v5/market/tickers?category=spot`\n});\n\nif (spotResponse.retCode !== 0) {\n  throw new Error(`Bybit API error: ${spotResponse.retMsg}`);\n}\n\n// Filter USDT pairs with volume > $50M, sort by volume\nconst pairs = spotResponse.result.list\n  .filter(t => t.symbol.endsWith('USDT'))\n  .map(t => ({\n    symbol: t.symbol,\n    lastPrice: parseFloat(t.lastPrice),\n    volume24h: parseFloat(t.turnover24h),\n    change24h: parseFloat(t.price24hPcnt) * 100\n  }))\n  .filter(t => t.volume24h >= MIN_VOLUME)\n  .sort((a, b) => b.volume24h - a.volume24h)\n  .slice(0, 20); // Top 20 pairs\n\nreturn pairs.map(p => ({ json: { ...p, baseUrl } }));"
       },
       "id": "get-top-pairs",
       "name": "Get Top Pairs by Volume",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [540, 400]
+      "position": [
+        540,
+        400
+      ]
     },
     {
       "parameters": {
@@ -41,7 +55,10 @@
       "name": "Fetch Multi-TF Candles",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [780, 400]
+      "position": [
+        780,
+        400
+      ]
     },
     {
       "parameters": {
@@ -51,7 +68,10 @@
       "name": "Pre-Process & Find Levels",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [1020, 400]
+      "position": [
+        1020,
+        400
+      ]
     },
     {
       "parameters": {
@@ -61,7 +81,10 @@
       "name": "Claude: Analyze Market",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [1260, 400]
+      "position": [
+        1260,
+        400
+      ]
     },
     {
       "parameters": {
@@ -71,17 +94,29 @@
       "name": "Validate Signal Criteria",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [1500, 400]
+      "position": [
+        1500,
+        400
+      ]
     },
     {
       "parameters": {
         "conditions": {
-          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict" },
-          "conditions": [{
-            "leftValue": "={{ $json._pass }}",
-            "rightValue": true,
-            "operator": { "type": "boolean", "operation": "true" }
-          }],
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ $json._pass }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true"
+              }
+            }
+          ],
           "combinator": "and"
         },
         "options": {}
@@ -90,7 +125,10 @@
       "name": "Is Actionable?",
       "type": "n8n-nodes-base.filter",
       "typeVersion": 2,
-      "position": [1740, 400]
+      "position": [
+        1740,
+        400
+      ]
     },
     {
       "parameters": {
@@ -108,7 +146,10 @@
       "name": "Trigger Trade Executor",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
-      "position": [1980, 400]
+      "position": [
+        1980,
+        400
+      ]
     },
     {
       "parameters": {
@@ -118,57 +159,151 @@
       "name": "Build Scan Report",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [1740, 600]
+      "position": [
+        1740,
+        600
+      ]
     },
     {
       "parameters": {
         "operation": "sendMessage",
         "chatId": "={{ $getWorkflowStaticData('global').TELEGRAM_CHAT_ID }}",
         "text": "={{ $json.message }}",
-        "additionalFields": { "parse_mode": "HTML" }
+        "additionalFields": {
+          "parse_mode": "HTML"
+        }
       },
       "id": "tg-report",
       "name": "TG: Scan Report",
       "type": "n8n-nodes-base.telegram",
       "typeVersion": 1.2,
-      "position": [1980, 600],
+      "position": [
+        1980,
+        600
+      ],
       "credentials": {
-        "telegramApi": { "id": "TELEGRAM_CREDENTIALS_ID", "name": "Telegram Bot" }
+        "telegramApi": {
+          "id": "TELEGRAM_CREDENTIALS_ID",
+          "name": "Telegram Bot"
+        }
       }
     }
   ],
   "connections": {
     "Every 15 Minutes": {
-      "main": [[ { "node": "Config", "type": "main", "index": 0 } ]]
+      "main": [
+        [
+          {
+            "node": "Config",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     },
     "Config": {
-      "main": [[ { "node": "Get Top Pairs by Volume", "type": "main", "index": 0 } ]]
+      "main": [
+        [
+          {
+            "node": "Get Top Pairs by Volume",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     },
     "Get Top Pairs by Volume": {
-      "main": [[ { "node": "Fetch Multi-TF Candles", "type": "main", "index": 0 } ]]
+      "main": [
+        [
+          {
+            "node": "Fetch Multi-TF Candles",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     },
     "Fetch Multi-TF Candles": {
-      "main": [[ { "node": "Pre-Process & Find Levels", "type": "main", "index": 0 } ]]
+      "main": [
+        [
+          {
+            "node": "Pre-Process & Find Levels",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     },
     "Pre-Process & Find Levels": {
-      "main": [[ { "node": "Claude: Analyze Market", "type": "main", "index": 0 } ]]
+      "main": [
+        [
+          {
+            "node": "Claude: Analyze Market",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     },
     "Claude: Analyze Market": {
-      "main": [[ { "node": "Validate Signal Criteria", "type": "main", "index": 0 } ]]
+      "main": [
+        [
+          {
+            "node": "Validate Signal Criteria",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     },
     "Validate Signal Criteria": {
-      "main": [[
-        { "node": "Is Actionable?", "type": "main", "index": 0 },
-        { "node": "Build Scan Report", "type": "main", "index": 0 }
-      ]]
+      "main": [
+        [
+          {
+            "node": "Is Actionable?",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Build Scan Report",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     },
     "Is Actionable?": {
-      "main": [[ { "node": "Trigger Trade Executor", "type": "main", "index": 0 } ]]
+      "main": [
+        [
+          {
+            "node": "Trigger Trade Executor",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     },
     "Build Scan Report": {
-      "main": [[ { "node": "TG: Scan Report", "type": "main", "index": 0 } ]]
+      "main": [
+        [
+          {
+            "node": "TG: Scan Report",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     }
   },
-  "settings": { "executionOrder": "v1" },
-  "tags": [{ "name": "gerchik-bot" }, { "name": "scanner" }]
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "tags": [
+    {
+      "name": "gerchik-bot"
+    },
+    {
+      "name": "scanner"
+    }
+  ]
 }
