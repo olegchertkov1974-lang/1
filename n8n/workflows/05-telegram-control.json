@@ -102,6 +102,14 @@
                 "combinator": "and"
               },
               "renameOutput": true, "outputLabel": "help"
+            },
+            {
+              "conditions": {
+                "options": { "caseSensitive": false, "leftValue": "", "typeValidation": "strict" },
+                "conditions": [{ "leftValue": "={{ $json.command }}", "rightValue": "/model", "operator": { "type": "string", "operation": "equals" } }],
+                "combinator": "and"
+              },
+              "renameOutput": true, "outputLabel": "model"
             }
           ]
         },
@@ -185,13 +193,23 @@
     },
     {
       "parameters": {
-        "jsCode": "// /help — show available commands\nlet msg = '🤖 <b>Gerchik Trading Bot</b>\\n\\n';\nmsg += '<b>Доступные команды:</b>\\n\\n';\nmsg += '/status — текущие позиции, P&L, баланс\\n';\nmsg += '/stop — экстренная остановка бота\\n';\nmsg += '/start — возобновление работы\\n';\nmsg += '/report — P&L за день\\n';\nmsg += '/report week — P&L за неделю\\n';\nmsg += '/pairs — список торговых пар\\n';\nmsg += '/set_risk 0.5 — изменить % риска на сделку\\n';\nmsg += '/mode spot|futures|both — режим торговли\\n';\nmsg += '/help — эта справка\\n';\n\nreturn [{ json: { message: msg } }];"
+        "jsCode": "// /help — show available commands\nlet msg = '🤖 <b>Gerchik Trading Bot</b>\\n\\n';\nmsg += '<b>Доступные команды:</b>\\n\\n';\nmsg += '/status — текущие позиции, P&L, баланс\\n';\nmsg += '/stop — экстренная остановка бота\\n';\nmsg += '/start — возобновление работы\\n';\nmsg += '/report — P&L за день\\n';\nmsg += '/report week — P&L за неделю\\n';\nmsg += '/pairs — список торговых пар\\n';\nmsg += '/set_risk 0.5 — изменить % риска на сделку\\n';\nmsg += '/mode spot|futures|both — режим торговли\\n';\nmsg += '/model — список AI моделей\\n';\nmsg += '/model 3 — переключить модель по номеру\\n';\nmsg += '/help — эта справка\\n';\n\nreturn [{ json: { message: msg } }];"
       },
       "id": "cmd-help",
       "name": "CMD: /help",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [960, 1080]
+    },
+    {
+      "parameters": {
+        "jsCode": "// /model [name|number] — view or switch AI model\nconst args = $input.first().json.args || [];\nconst store = $getWorkflowStaticData('global');\n\nconst models = [\n  { num: 1, id: 'anthropic/claude-sonnet-4-20250514', name: 'Claude Sonnet 4', desc: 'Anthropic — быстрый и умный' },\n  { num: 2, id: 'anthropic/claude-opus-4-20250514', name: 'Claude Opus 4', desc: 'Anthropic — самый мощный' },\n  { num: 3, id: 'deepseek/deepseek-chat-v3-0324', name: 'DeepSeek V3', desc: 'DeepSeek — быстрый, дешёвый' },\n  { num: 4, id: 'deepseek/deepseek-reasoner', name: 'DeepSeek R1', desc: 'DeepSeek — с рассуждением' },\n  { num: 5, id: 'openai/gpt-4o', name: 'GPT-4o', desc: 'OpenAI — мультимодальный' },\n  { num: 6, id: 'openai/o3-mini', name: 'o3-mini', desc: 'OpenAI — быстрый reasoning' },\n  { num: 7, id: 'google/gemini-2.5-pro-preview-03-25', name: 'Gemini 2.5 Pro', desc: 'Google — мощный, большой контекст' },\n  { num: 8, id: 'google/gemini-2.5-flash-preview', name: 'Gemini 2.5 Flash', desc: 'Google — быстрый и дешёвый' },\n  { num: 9, id: 'meta-llama/llama-4-maverick', name: 'Llama 4 Maverick', desc: 'Meta — открытая модель' },\n  { num: 10, id: 'qwen/qwen-2.5-72b-instruct', name: 'Qwen 2.5 72B', desc: 'Alibaba — мощная открытая' }\n];\n\nconst currentModel = store.OPENROUTER_MODEL || 'anthropic/claude-sonnet-4-20250514';\nlet msg = '';\n\nif (args.length === 0) {\n  // Show current model and list\n  const current = models.find(m => m.id === currentModel);\n  const currentName = current ? current.name : currentModel;\n  msg = `🤖 <b>AI Модель</b>\\n\\n`;\n  msg += `<b>Текущая:</b> ${currentName}\\n`;\n  msg += `<code>${currentModel}</code>\\n\\n`;\n  msg += `<b>Доступные модели:</b>\\n\\n`;\n  for (const m of models) {\n    const active = m.id === currentModel ? ' ✅' : '';\n    msg += `<b>${m.num}.</b> ${m.name}${active}\\n`;\n    msg += `   <i>${m.desc}</i>\\n`;\n    msg += `   <code>${m.id}</code>\\n\\n`;\n  }\n  msg += `<b>Использование:</b>\\n`;\n  msg += `<code>/model 3</code> — выбрать по номеру\\n`;\n  msg += `<code>/model deepseek/deepseek-chat-v3-0324</code> — указать ID\\n`;\n} else {\n  const input = args[0];\n  const num = parseInt(input);\n  let selected = null;\n  \n  if (!isNaN(num) && num >= 1 && num <= models.length) {\n    selected = models[num - 1];\n  } else {\n    // Try to match by id or partial name\n    selected = models.find(m => m.id === input || m.id.includes(input));\n  }\n  \n  if (selected) {\n    store.OPENROUTER_MODEL = selected.id;\n    msg = `✅ <b>Модель изменена</b>\\n\\n`;\n    msg += `<b>Новая модель:</b> ${selected.name}\\n`;\n    msg += `<code>${selected.id}</code>\\n`;\n    msg += `<i>${selected.desc}</i>\\n`;\n  } else {\n    // Custom model ID — set directly\n    store.OPENROUTER_MODEL = input;\n    msg = `✅ <b>Модель изменена</b>\\n\\n`;\n    msg += `<b>Новая модель:</b> <code>${input}</code>\\n`;\n    msg += `<i>Кастомная модель — убедитесь что она доступна на OpenRouter</i>\\n`;\n  }\n}\n\nmsg += `\\n⏱ ${new Date().toLocaleString('ru-RU', { timeZone: 'Europe/Moscow' })}`;\nreturn [{ json: { message: msg } }];"
+      },
+      "id": "cmd-model",
+      "name": "CMD: /model",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [960, 1220]
     },
     {
       "parameters": {
@@ -229,7 +247,8 @@
         [ { "node": "CMD: /pairs", "type": "main", "index": 0 } ],
         [ { "node": "CMD: /set_risk", "type": "main", "index": 0 } ],
         [ { "node": "CMD: /mode", "type": "main", "index": 0 } ],
-        [ { "node": "CMD: /help", "type": "main", "index": 0 } ]
+        [ { "node": "CMD: /help", "type": "main", "index": 0 } ],
+        [ { "node": "CMD: /model", "type": "main", "index": 0 } ]
       ]
     },
     "CMD: /status": {
@@ -254,6 +273,9 @@
       "main": [[ { "node": "Send Response", "type": "main", "index": 0 } ]]
     },
     "CMD: /help": {
+      "main": [[ { "node": "Send Response", "type": "main", "index": 0 } ]]
+    },
+    "CMD: /model": {
       "main": [[ { "node": "Send Response", "type": "main", "index": 0 } ]]
     }
   },
