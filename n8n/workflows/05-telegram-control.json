@@ -17,7 +17,7 @@
     },
     {
       "parameters": {
-        "jsCode": "const cfg = $getWorkflowStaticData('global');\nif (!cfg._initialized) {\n  cfg.BYBIT_API_KEY = 'YOUR_BYBIT_API_KEY';\n  cfg.BYBIT_API_SECRET = 'YOUR_BYBIT_API_SECRET';\n  cfg.BYBIT_TESTNET = 'true';\n  cfg.OPENROUTER_API_KEY = 'YOUR_OPENROUTER_API_KEY';\n  cfg.OPENROUTER_MODEL = 'anthropic/claude-sonnet-4-20250514';\n  cfg.TELEGRAM_CHAT_ID = 'YOUR_TELEGRAM_CHAT_ID';\n  cfg.MAX_RISK_PER_TRADE = '1';\n  cfg.MAX_DAILY_LOSS = '3';\n  cfg.MAX_OPEN_POSITIONS = '3';\n  cfg.MIN_RISK_REWARD = '3';\n  cfg.MIN_CONFIDENCE = '75';\n  cfg.MIN_VOLUME_24H = '50000000';\n  cfg.WEBHOOK_URL = 'https://YOUR-N8N-URL/';\n  cfg._initialized = true;\n}\nreturn $input.all();"
+        "jsCode": "const cfg = $getWorkflowStaticData('global');\nif (!cfg._initialized) {\n  cfg.BYBIT_API_KEY = 'YOUR_BYBIT_API_KEY';\n  cfg.BYBIT_API_SECRET = 'YOUR_BYBIT_API_SECRET';\n  cfg.BYBIT_TESTNET = 'true';\n  cfg.OPENROUTER_API_KEY = 'YOUR_OPENROUTER_API_KEY';\n  cfg.OPENROUTER_MODEL = 'anthropic/claude-sonnet-4-20250514';\n  cfg.TELEGRAM_CHAT_ID = 'YOUR_TELEGRAM_CHAT_ID';\n  cfg.MAX_RISK_PER_TRADE = '1';\n  cfg.MAX_DAILY_LOSS = '3';\n  cfg.MAX_OPEN_POSITIONS = '3';\n  cfg.MIN_RISK_REWARD = '3';\n  cfg.MIN_CONFIDENCE = '75';\n  cfg.MIN_VOLUME_24H = '50000000';\n  cfg.WEBHOOK_URL = 'https://YOUR-N8N-URL/';\n  cfg._initialized = true;\n}\n// Pass through telegram message\nreturn $input.all();"
       },
       "id": "config",
       "name": "Config",
@@ -33,7 +33,7 @@
       "name": "Parse Command",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [440, 400]
+      "position": [540, 400]
     },
     {
       "parameters": {
