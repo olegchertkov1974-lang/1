@@ -110,6 +110,14 @@
                 "combinator": "and"
               },
               "renameOutput": true, "outputLabel": "model"
+            },
+            {
+              "conditions": {
+                "options": { "caseSensitive": false, "leftValue": "", "typeValidation": "strict" },
+                "conditions": [{ "leftValue": "={{ $json.command }}", "rightValue": "/balance", "operator": { "type": "string", "operation": "equals" } }],
+                "combinator": "and"
+              },
+              "renameOutput": true, "outputLabel": "balance"
             }
           ]
         },
@@ -193,7 +201,8 @@
     },
     {
       "parameters": {
-        "jsCode": "// /help — show available commands\nlet msg = '🤖 <b>Gerchik Trading Bot</b>\\n\\n';\nmsg += '<b>Доступные команды:</b>\\n\\n';\nmsg += '/status — текущие позиции, P&L, баланс\\n';\nmsg += '/stop — экстренная остановка бота\\n';\nmsg += '/start — возобновление работы\\n';\nmsg += '/report — P&L за день\\n';\nmsg += '/report week — P&L за неделю\\n';\nmsg += '/pairs — список торговых пар\\n';\nmsg += '/set_risk 0.5 — изменить % риска на сделку\\n';\nmsg += '/mode spot|futures|both — режим торговли\\n';\nmsg += '/model — список AI моделей\\n';\nmsg += '/model 3 — переключить модель по номеру\\n';\nmsg += '/help — эта справка\\n';\n\nreturn [{ json: { message: msg } }];"
+        "jsCode": "// /help — show available commands\nlet msg = '🤖 <b>Gerchik Trading Bot</b>\\n\\n';\nmsg += '<b>Доступные команды:</b>\\n\\n';\nmsg += '/balance — баланс кошелька (активы)\\n';
+msg += '/status — текущие позиции, P&L, баланс\\n';\nmsg += '/stop — экстренная остановка бота\\n';\nmsg += '/start — возобновление работы\\n';\nmsg += '/report — P&L за день\\n';\nmsg += '/report week — P&L за неделю\\n';\nmsg += '/pairs — список торговых пар\\n';\nmsg += '/set_risk 0.5 — изменить % риска на сделку\\n';\nmsg += '/mode spot|futures|both — режим торговли\\n';\nmsg += '/model — список AI моделей\\n';\nmsg += '/model 3 — переключить модель по номеру\\n';\nmsg += '/help — эта справка\\n';\n\nreturn [{ json: { message: msg } }];"
       },
       "id": "cmd-help",
       "name": "CMD: /help",
@@ -210,6 +219,16 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [960, 1220]
+    },
+    {
+      "parameters": {
+        "jsCode": "// /balance — detailed wallet balance breakdown\nconst cfg = $getWorkflowStaticData('global');\nconst crypto = require('crypto');\n\nconst isTestnet = (cfg.BYBIT_TESTNET || 'true').toLowerCase() === 'true';\nconst baseUrl = isTestnet ? 'https://api-testnet.bybit.com' : 'https://api.bybit.com';\nconst apiKey = cfg.BYBIT_API_KEY;\nconst apiSecret = cfg.BYBIT_API_SECRET;\n\nasync function signedGet(endpoint, params) {\n  const timestamp = Date.now().toString();\n  const recvWindow = '5000';\n  const qs = Object.entries(params).map(([k,v]) => `${k}=${v}`).join('&');\n  const preSign = timestamp + apiKey + recvWindow + qs;\n  const signature = crypto.createHmac('sha256', apiSecret).update(preSign).digest('hex');\n  return this.helpers.httpRequest({\n    method: 'GET',\n    url: `${baseUrl}${endpoint}?${qs}`,\n    headers: {\n      'X-BAPI-API-KEY': apiKey, 'X-BAPI-SIGN': signature,\n      'X-BAPI-TIMESTAMP': timestamp, 'X-BAPI-RECV-WINDOW': recvWindow,\n      'Content-Type': 'application/json'\n    }\n  });\n}\n\nconst env = isTestnet ? '🧪 TESTNET' : '💰 MAINNET';\nlet msg = `${env} <b>Баланс кошелька</b>\\n\\n`;\n\ntry {\n  const resp = await signedGet.call(this, '/v5/account/wallet-balance', { accountType: 'UNIFIED' });\n  if (resp.retCode === 0 && resp.result?.list?.length > 0) {\n    const wallet = resp.result.list[0];\n    const equity = parseFloat(wallet.totalEquity || 0);\n    const available = parseFloat(wallet.totalAvailableBalance || 0);\n    const walletBal = parseFloat(wallet.totalWalletBalance || 0);\n    const unrealised = parseFloat(wallet.totalPerpUPL || 0);\n    const margin = parseFloat(wallet.totalInitialMargin || 0);\n    \n    msg += `<b>Общий эквити:</b> <code>$${equity.toFixed(2)}</code>\\n`;\n    msg += `<b>Баланс кошелька:</b> <code>$${walletBal.toFixed(2)}</code>\\n`;\n    msg += `<b>Доступно:</b> <code>$${available.toFixed(2)}</code>\\n`;\n    if (unrealised !== 0) msg += `<b>Нереализ. P&L:</b> <code>$${unrealised.toFixed(2)}</code>\\n`;\n    if (margin > 0) msg += `<b>Маржа:</b> <code>$${margin.toFixed(2)}</code>\\n`;\n    \n    // Show individual coins\n    const coins = (wallet.coin || []).filter(c => parseFloat(c.walletBalance) > 0.001);\n    if (coins.length > 0) {\n      msg += `\\n<b>Активы:</b>\\n`;\n      for (const c of coins) {\n        const bal = parseFloat(c.walletBalance);\n        const usd = parseFloat(c.usdValue || 0);\n        msg += `  • <b>${c.coin}</b>: <code>${bal.toFixed(4)}</code>`;\n        if (usd > 0.01) msg += ` (~$${usd.toFixed(2)})`;\n        msg += `\\n`;\n      }\n    }\n  } else {\n    msg += `❌ Ошибка: ${resp.retMsg || 'Не удалось получить баланс'}\\n`;\n  }\n} catch(e) {\n  msg += `❌ Ошибка запроса: ${e.message}\\n`;\n}\n\nmsg += `\\n⏱ ${new Date().toLocaleString('ru-RU', { timeZone: 'Europe/Moscow' })}`;\nreturn [{ json: { message: msg } }];"
+      },
+      "id": "cmd-balance",
+      "name": "CMD: /balance",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [960, 1360]
     },
     {
       "parameters": {
@@ -248,7 +267,8 @@
         [ { "node": "CMD: /set_risk", "type": "main", "index": 0 } ],
         [ { "node": "CMD: /mode", "type": "main", "index": 0 } ],
         [ { "node": "CMD: /help", "type": "main", "index": 0 } ],
-        [ { "node": "CMD: /model", "type": "main", "index": 0 } ]
+        [ { "node": "CMD: /model", "type": "main", "index": 0 } ],
+        [ { "node": "CMD: /balance", "type": "main", "index": 0 } ]
       ]
     },
     "CMD: /status": {
@@ -276,6 +296,9 @@
       "main": [[ { "node": "Send Response", "type": "main", "index": 0 } ]]
     },
     "CMD: /model": {
+      "main": [[ { "node": "Send Response", "type": "main", "index": 0 } ]]
+    },
+    "CMD: /balance": {
       "main": [[ { "node": "Send Response", "type": "main", "index": 0 } ]]
     }
   },
