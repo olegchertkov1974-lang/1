@@ -16,7 +16,7 @@
     },
     {
       "parameters": {
-        "jsCode": "const cfg = $getWorkflowStaticData('global');\nif (!cfg._initialized) {\n  cfg.BYBIT_API_KEY = 'wS5MT4IqmNYxjLuBlP';\n  cfg.BYBIT_API_SECRET = 'ZmwhvqOx42QzLQ54tMzaUGScr9cSxLU8XklW';\n  cfg.BYBIT_TESTNET = 'false';\n  cfg.OPENROUTER_API_KEY = 'YOUR_OPENROUTER_API_KEY';\n  cfg.OPENROUTER_MODEL = 'anthropic/claude-sonnet-4-20250514';\n  cfg.TELEGRAM_CHAT_ID = '543663073';\n  cfg.MAX_RISK_PER_TRADE = '1';\n  cfg.MAX_DAILY_LOSS = '3';\n  cfg.MAX_OPEN_POSITIONS = '3';\n  cfg.MIN_RISK_REWARD = '3';\n  cfg.MIN_CONFIDENCE = '75';\n  cfg.WEBHOOK_URL = 'https://YOUR-N8N-URL/';\n  cfg._initialized = true;\n}\n// Pass through incoming signal data\nconst signal = $input.first().json;\nreturn [{ json: signal }];"
+        "jsCode": "const cfg = $getWorkflowStaticData('global');\nif (!cfg._initialized) {\n  cfg.BYBIT_API_KEY = 'YOUR_BYBIT_API_KEY';\n  cfg.BYBIT_API_SECRET = 'YOUR_BYBIT_API_SECRET';\n  cfg.BYBIT_TESTNET = 'false';\n  cfg.OPENROUTER_API_KEY = 'YOUR_OPENROUTER_API_KEY';\n  cfg.OPENROUTER_MODEL = 'anthropic/claude-sonnet-4-20250514';\n  cfg.TELEGRAM_CHAT_ID = '543663073';\n  cfg.MAX_RISK_PER_TRADE = '1';\n  cfg.MAX_DAILY_LOSS = '3';\n  cfg.MAX_OPEN_POSITIONS = '3';\n  cfg.MIN_RISK_REWARD = '3';\n  cfg.MIN_CONFIDENCE = '75';\n  cfg.WEBHOOK_URL = 'https://YOUR-N8N-URL/';\n  cfg._initialized = true;\n}\n// Pass through incoming signal data\nconst signal = $input.first().json;\nreturn [{ json: signal }];"
       },
       "id": "config",
       "name": "Config",
