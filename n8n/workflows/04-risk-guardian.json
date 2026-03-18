@@ -71,7 +71,7 @@
       },
       "id": "if-breached",
       "name": "Daily Limit Breached?",
-      "type": "n8n-nodes-base.filter",
+      "type": "n8n-nodes-base.if",
       "typeVersion": 2,
       "position": [
         780,
