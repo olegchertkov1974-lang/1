@@ -118,6 +118,54 @@
                 "combinator": "and"
               },
               "renameOutput": true, "outputLabel": "balance"
+            },
+            {
+              "conditions": {
+                "options": { "caseSensitive": false, "leftValue": "", "typeValidation": "strict" },
+                "conditions": [{ "leftValue": "={{ $json.command }}", "rightValue": "/rejected", "operator": { "type": "string", "operation": "equals" } }],
+                "combinator": "and"
+              },
+              "renameOutput": true, "outputLabel": "rejected"
+            },
+            {
+              "conditions": {
+                "options": { "caseSensitive": false, "leftValue": "", "typeValidation": "strict" },
+                "conditions": [{ "leftValue": "={{ $json.command }}", "rightValue": "/accepted", "operator": { "type": "string", "operation": "equals" } }],
+                "combinator": "and"
+              },
+              "renameOutput": true, "outputLabel": "accepted"
+            },
+            {
+              "conditions": {
+                "options": { "caseSensitive": false, "leftValue": "", "typeValidation": "strict" },
+                "conditions": [{ "leftValue": "={{ $json.command }}", "rightValue": "/stats", "operator": { "type": "string", "operation": "equals" } }],
+                "combinator": "and"
+              },
+              "renameOutput": true, "outputLabel": "stats"
+            },
+            {
+              "conditions": {
+                "options": { "caseSensitive": false, "leftValue": "", "typeValidation": "strict" },
+                "conditions": [{ "leftValue": "={{ $json.command }}", "rightValue": "/explain", "operator": { "type": "string", "operation": "equals" } }],
+                "combinator": "and"
+              },
+              "renameOutput": true, "outputLabel": "explain"
+            },
+            {
+              "conditions": {
+                "options": { "caseSensitive": false, "leftValue": "", "typeValidation": "strict" },
+                "conditions": [{ "leftValue": "={{ $json.command }}", "rightValue": "/health", "operator": { "type": "string", "operation": "equals" } }],
+                "combinator": "and"
+              },
+              "renameOutput": true, "outputLabel": "health"
+            },
+            {
+              "conditions": {
+                "options": { "caseSensitive": false, "leftValue": "", "typeValidation": "strict" },
+                "conditions": [{ "leftValue": "={{ $json.command }}", "rightValue": "/errors", "operator": { "type": "string", "operation": "equals" } }],
+                "combinator": "and"
+              },
+              "renameOutput": true, "outputLabel": "errors"
             }
           ]
         },
@@ -201,8 +249,7 @@
     },
     {
       "parameters": {
-        "jsCode": "// /help — show available commands\nlet msg = '🤖 <b>Gerchik Trading Bot</b>\\n\\n';\nmsg += '<b>Доступные команды:</b>\\n\\n';\nmsg += '/balance — баланс кошелька (активы)\\n';
-msg += '/status — текущие позиции, P&L, баланс\\n';\nmsg += '/stop — экстренная остановка бота\\n';\nmsg += '/start — возобновление работы\\n';\nmsg += '/report — P&L за день\\n';\nmsg += '/report week — P&L за неделю\\n';\nmsg += '/pairs — список торговых пар\\n';\nmsg += '/set_risk 0.5 — изменить % риска на сделку\\n';\nmsg += '/mode spot|futures|both — режим торговли\\n';\nmsg += '/model — список AI моделей\\n';\nmsg += '/model 3 — переключить модель по номеру\\n';\nmsg += '/help — эта справка\\n';\n\nreturn [{ json: { message: msg } }];"
+        "jsCode": "// /help — show available commands\nlet msg = '🤖 <b>Gerchik Trading Bot</b>\\n\\n';\nmsg += '<b>Доступные команды:</b>\\n\\n';\nmsg += '/balance — баланс кошелька (активы)\\n';\nmsg += '/status — текущие позиции, P&L, баланс\\n';\nmsg += '/stop — экстренная остановка бота\\n';\nmsg += '/start — возобновление работы\\n';\nmsg += '/report — P&L за день\\n';\nmsg += '/report week — P&L за неделю\\n';\nmsg += '/pairs — список торговых пар\\n';\nmsg += '/set_risk 0.5 — изменить % риска на сделку\\n';\nmsg += '/mode spot|futures|both — режим торговли\\n';\nmsg += '/model — список AI моделей\\n';\nmsg += '/model 3 — переключить модель по номеру\\n';\nmsg += '/rejected — последние 10 отклонённых сигналов\\n';\nmsg += '/accepted — последние 10 принятых сигналов\\n';\nmsg += '/stats — общая статистика бота\\n';\nmsg += '/explain ETHUSDT — разбор последнего анализа пары\\n';\nmsg += '/health — здоровье бота и API\\n';\nmsg += '/errors — последние ошибки\\n';\nmsg += '/help — эта справка\\n';\n\nreturn [{ json: { message: msg } }];"
       },
       "id": "cmd-help",
       "name": "CMD: /help",
@@ -229,6 +276,66 @@ msg += '/status — текущие позиции, P&L, баланс\\n';\nmsg +
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [960, 1360]
+    },
+    {
+      "parameters": {
+        "jsCode": "// /rejected — last 10 rejected signals\nconst store = $getWorkflowStaticData('global');\nconst today = new Date().toISOString().slice(0,10);\nconst dateKey = `analytics_${today}`;\nconst data = store[dateKey] || [];\n\nconst rejected = data.filter(d => !d.taken_to_trade && d.sent_to_claude).slice(-10).reverse();\n\nlet msg = '❌ <b>ПОСЛЕДНИЕ ОТКЛОНЕНИЯ:</b>\\n\\n';\n\nif (rejected.length === 0) {\n  msg += '<i>Нет отклонённых сигналов за сегодня</i>\\n';\n} else {\n  for (let i = 0; i < rejected.length; i++) {\n    const r = rejected[i];\n    const time = new Date(r.timestamp).toLocaleTimeString('ru-RU', { timeZone: 'Europe/Moscow', hour: '2-digit', minute: '2-digit' });\n    const cr = r.claude_response || {};\n    msg += `<b>${i+1}. ${r.pair}</b> (${time}) — ${cr.action || 'WAIT'}\\n`;\n    msg += `   confidence: ${cr.confidence}, R:R: ${cr.risk_reward_ratio}, уровень: ${cr.level_strength}\\n`;\n    const reasons = (r.rejection_reasons || []).map(r => {\n      const map = { low_confidence: 'низкий confidence', low_rr: 'R:R ниже 1:3', weak_level: 'слабый уровень', tf_misalignment: 'таймфреймы не совпадают', against_trend: 'против тренда' };\n      return map[r] || r;\n    }).join(', ');\n    msg += `   Причина: ${reasons || 'нет данных'}\\n\\n`;\n  }\n}\n\nmsg += `⏱ ${new Date().toLocaleString('ru-RU', { timeZone: 'Europe/Moscow' })}`;\nreturn [{ json: { message: msg } }];"
+      },
+      "id": "cmd-rejected",
+      "name": "CMD: /rejected",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [960, 1500]
+    },
+    {
+      "parameters": {
+        "jsCode": "// /accepted — last 10 accepted signals\nconst store = $getWorkflowStaticData('global');\nconst cfg = store;\nconst crypto = require('crypto');\n\nconst isTestnet = (cfg.BYBIT_TESTNET || 'true').toLowerCase() === 'true';\nconst baseUrl = isTestnet ? 'https://api-testnet.bybit.com' : 'https://api.bybit.com';\nconst apiKey = cfg.BYBIT_API_KEY;\nconst apiSecret = cfg.BYBIT_API_SECRET;\n\nasync function signedGet(endpoint, params) {\n  const timestamp = Date.now().toString();\n  const recvWindow = '5000';\n  const qs = Object.entries(params).map(([k,v]) => `${k}=${v}`).join('&');\n  const preSign = timestamp + apiKey + recvWindow + qs;\n  const signature = crypto.createHmac('sha256', apiSecret).update(preSign).digest('hex');\n  return this.helpers.httpRequest({\n    method: 'GET', url: `${baseUrl}${endpoint}?${qs}`,\n    headers: { 'X-BAPI-API-KEY': apiKey, 'X-BAPI-SIGN': signature, 'X-BAPI-TIMESTAMP': timestamp, 'X-BAPI-RECV-WINDOW': recvWindow, 'Content-Type': 'application/json' }\n  });\n}\n\nconst today = new Date().toISOString().slice(0,10);\nconst dateKey = `analytics_${today}`;\nconst data = store[dateKey] || [];\nconst accepted = data.filter(d => d.taken_to_trade).slice(-10).reverse();\n\n// Get current positions for P&L\nlet positions = [];\ntry {\n  const posResp = await signedGet.call(this, '/v5/position/list', { category: 'linear', settleCoin: 'USDT' });\n  if (posResp.retCode === 0) positions = posResp.result?.list || [];\n} catch(e) {}\n\nlet msg = '✅ <b>ПОСЛЕДНИЕ СДЕЛКИ:</b>\\n\\n';\n\nif (accepted.length === 0) {\n  msg += '<i>Нет принятых сигналов за сегодня</i>\\n';\n} else {\n  for (let i = 0; i < accepted.length; i++) {\n    const a = accepted[i];\n    const time = new Date(a.timestamp).toLocaleTimeString('ru-RU', { timeZone: 'Europe/Moscow', hour: '2-digit', minute: '2-digit' });\n    const cr = a.claude_response || {};\n    const dir = cr.action === 'BUY' ? 'LONG' : 'SHORT';\n    const pos = positions.find(p => p.symbol === a.pair && parseFloat(p.size) > 0);\n    const status = pos ? 'АКТИВНА' : 'ЗАКРЫТА';\n    const pnl = pos ? `Текущий P&L: $${parseFloat(pos.unrealisedPnl).toFixed(2)}` : '';\n    \n    msg += `<b>${i+1}. ${a.pair} ${dir}</b> (${time}) — ${status}\\n`;\n    msg += `   Вход: ${cr.entry_price || 'N/A'}, Стоп: ${cr.stop_loss || 'N/A'}, Тейк: ${cr.take_profit_1 || 'N/A'}\\n`;\n    msg += `   R:R 1:${cr.risk_reward_ratio || 'N/A'}, confidence: ${cr.confidence}\\n`;\n    if (pnl) msg += `   ${pnl}\\n`;\n    msg += '\\n';\n  }\n}\n\nmsg += `⏱ ${new Date().toLocaleString('ru-RU', { timeZone: 'Europe/Moscow' })}`;\nreturn [{ json: { message: msg } }];"
+      },
+      "id": "cmd-accepted",
+      "name": "CMD: /accepted",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [960, 1640]
+    },
+    {
+      "parameters": {
+        "jsCode": "// /stats — overall trading statistics\nconst store = $getWorkflowStaticData('global');\nconst cfg = store;\nconst crypto = require('crypto');\n\nconst isTestnet = (cfg.BYBIT_TESTNET || 'true').toLowerCase() === 'true';\nconst baseUrl = isTestnet ? 'https://api-testnet.bybit.com' : 'https://api.bybit.com';\nconst apiKey = cfg.BYBIT_API_KEY;\nconst apiSecret = cfg.BYBIT_API_SECRET;\n\nasync function signedGet(endpoint, params) {\n  const timestamp = Date.now().toString();\n  const recvWindow = '5000';\n  const qs = Object.entries(params).map(([k,v]) => `${k}=${v}`).join('&');\n  const preSign = timestamp + apiKey + recvWindow + qs;\n  const signature = crypto.createHmac('sha256', apiSecret).update(preSign).digest('hex');\n  return this.helpers.httpRequest({\n    method: 'GET', url: `${baseUrl}${endpoint}?${qs}`,\n    headers: { 'X-BAPI-API-KEY': apiKey, 'X-BAPI-SIGN': signature, 'X-BAPI-TIMESTAMP': timestamp, 'X-BAPI-RECV-WINDOW': recvWindow, 'Content-Type': 'application/json' }\n  });\n}\n\n// Get trades for today and week\nconst now = new Date();\nconst todayStart = new Date(now); todayStart.setHours(0,0,0,0);\nconst weekStart = new Date(now); weekStart.setDate(weekStart.getDate() - 7);\n\nlet todayTrades = [], weekTrades = [];\ntry {\n  const resp = await signedGet.call(this, '/v5/position/closed-pnl', { category: 'linear', startTime: weekStart.getTime().toString(), limit: '100' });\n  if (resp.retCode === 0) {\n    weekTrades = resp.result?.list || [];\n    todayTrades = weekTrades.filter(t => parseInt(t.createdTime) >= todayStart.getTime());\n  }\n} catch(e) {}\n\nfunction calcStats(trades) {\n  const wins = trades.filter(t => parseFloat(t.closedPnl) > 0);\n  const losses = trades.filter(t => parseFloat(t.closedPnl) < 0);\n  const totalPnl = trades.reduce((s,t) => s + parseFloat(t.closedPnl), 0);\n  const winRate = trades.length > 0 ? (wins.length / trades.length * 100).toFixed(1) : '0';\n  return { total: trades.length, wins: wins.length, losses: losses.length, pnl: totalPnl, winRate };\n}\n\nconst tStats = calcStats(todayTrades);\nconst wStats = calcStats(weekTrades);\n\n// Analytics data\nconst todayKey = `analytics_${now.toISOString().slice(0,10)}`;\nconst todayAnalytics = store[todayKey] || [];\nconst totalPairsAnalyzed = todayAnalytics.length;\nconst rejectedCount = todayAnalytics.filter(d => !d.taken_to_trade).length;\nconst rejectionRate = totalPairsAnalyzed > 0 ? (rejectedCount / totalPairsAnalyzed * 100).toFixed(0) : '0';\n\n// Find top rejection reason\nconst reasonCounts = {};\nfor (const d of todayAnalytics) {\n  for (const r of (d.rejection_reasons || [])) {\n    reasonCounts[r] = (reasonCounts[r] || 0) + 1;\n  }\n}\nconst topReason = Object.entries(reasonCounts).sort((a,b) => b[1] - a[1])[0];\nconst topReasonStr = topReason ? `${topReason[0]} (${(topReason[1]/Math.max(rejectedCount,1)*100).toFixed(0)}%)` : 'N/A';\n\nlet best = { symbol: 'N/A', pnl: 0 }, worst = { symbol: 'N/A', pnl: 0 };\nfor (const t of weekTrades) {\n  const pnl = parseFloat(t.closedPnl);\n  if (pnl > best.pnl) { best = { symbol: t.symbol, pnl }; }\n  if (pnl < worst.pnl) { worst = { symbol: t.symbol, pnl }; }\n}\n\nlet msg = '📈 <b>СТАТИСТИКА БОТА</b>\\n\\n';\nmsg += `<b>За сегодня / неделю:</b>\\n`;\nmsg += `• Всего сделок: ${tStats.total} / ${wStats.total}\\n`;\nmsg += `• Выигрышных: ${tStats.wins} / ${wStats.wins}\\n`;\nmsg += `• Проигрышных: ${tStats.losses} / ${wStats.losses}\\n`;\nmsg += `• Винрейт: ${tStats.winRate}% / ${wStats.winRate}%\\n`;\nmsg += `• Общий P&L: $${tStats.pnl.toFixed(2)} / $${wStats.pnl.toFixed(2)}\\n\\n`;\nmsg += `• Лучшая сделка: ${best.symbol} +$${best.pnl.toFixed(2)}\\n`;\nmsg += `• Худшая сделка: ${worst.symbol} $${worst.pnl.toFixed(2)}\\n\\n`;\nmsg += `• Пар проанализировано сегодня: ${totalPairsAnalyzed}\\n`;\nmsg += `• Процент отклонений: ${rejectionRate}%\\n`;\nmsg += `• Главная причина отклонений: ${topReasonStr}\\n`;\n\nmsg += `\\n⏱ ${new Date().toLocaleString('ru-RU', { timeZone: 'Europe/Moscow' })}`;\nreturn [{ json: { message: msg } }];"
+      },
+      "id": "cmd-stats",
+      "name": "CMD: /stats",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [960, 1780]
+    },
+    {
+      "parameters": {
+        "jsCode": "// /explain PAIR — full breakdown of last analysis for a pair\nconst store = $getWorkflowStaticData('global');\nconst args = $input.first().json.args || [];\nconst pair = (args[0] || '').toUpperCase();\n\nif (!pair) {\n  return [{ json: { message: '❌ Укажи пару: <code>/explain ETHUSDT</code>' } }];\n}\n\n// Find last analysis for this pair\nconst today = new Date().toISOString().slice(0,10);\nconst dateKey = `analytics_${today}`;\nconst data = store[dateKey] || [];\nconst entry = [...data].reverse().find(d => d.pair === pair || d.pair === pair + 'USDT');\n\nif (!entry) {\n  return [{ json: { message: `❌ Нет данных по ${pair} за сегодня` } }];\n}\n\nconst cr = entry.claude_response || {};\nconst time = new Date(entry.timestamp).toLocaleTimeString('ru-RU', { timeZone: 'Europe/Moscow', hour: '2-digit', minute: '2-digit' });\n\nconst checks = [\n  { name: 'Confidence', val: cr.confidence, min: 75, pass: cr.confidence >= 75 },\n  { name: 'R:R', val: cr.risk_reward_ratio, min: 3.0, pass: cr.risk_reward_ratio >= 3 },\n  { name: 'Уровень', val: cr.level_strength, min: 'medium+', pass: cr.level_strength !== 'weak' },\n  { name: 'Таймфреймы', val: cr.timeframe_alignment ? 'совпадают' : 'нет', min: 'совпадают', pass: cr.timeframe_alignment }\n];\nconst passed = checks.filter(c => c.pass).length;\n\nlet msg = `🔎 <b>${entry.pair}</b> — последний анализ (${time})\\n\\n`;\nmsg += `<b>Ответ Claude:</b> ${cr.action}\\n`;\nfor (const ch of checks) {\n  const icon = ch.pass ? '✅' : '❌';\n  msg += `${icon} ${ch.name}: ${ch.val} / ${ch.min}\\n`;\n}\nmsg += `<b>Тренд:</b> ${cr.trend_direction}\\n\\n`;\nmsg += `<b>Reasoning:</b> \"${cr.reasoning || 'N/A'}\"\\n\\n`;\nmsg += `Прошёл критерии: ${passed} из ${checks.length} ${passed === checks.length ? '✅' : '❌'}\\n`;\n\nmsg += `\\n⏱ ${new Date().toLocaleString('ru-RU', { timeZone: 'Europe/Moscow' })}`;\nreturn [{ json: { message: msg } }];"
+      },
+      "id": "cmd-explain",
+      "name": "CMD: /explain",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [960, 1920]
+    },
+    {
+      "parameters": {
+        "jsCode": "// /health — bot health status\nconst store = $getWorkflowStaticData('global');\nconst cfg = store;\nconst crypto = require('crypto');\n\nconst isTestnet = (cfg.BYBIT_TESTNET || 'true').toLowerCase() === 'true';\nconst baseUrl = isTestnet ? 'https://api-testnet.bybit.com' : 'https://api.bybit.com';\nconst apiKey = cfg.BYBIT_API_KEY;\nconst apiSecret = cfg.BYBIT_API_SECRET;\n\n// Ping Bybit API\nlet bybitStatus = '❌ Недоступен', bybitMs = 0;\ntry {\n  const t1 = Date.now();\n  const resp = await this.helpers.httpRequest({ method: 'GET', url: `${baseUrl}/v5/market/time` });\n  bybitMs = Date.now() - t1;\n  bybitStatus = resp.retCode === 0 ? `✅ ${bybitMs}ms` : `⚠️ Ошибка: ${resp.retMsg}`;\n} catch(e) { bybitStatus = `❌ ${e.message}`; }\n\n// Ping OpenRouter\nlet claudeStatus = '❌ Недоступен';\ntry {\n  const t1 = Date.now();\n  const resp = await this.helpers.httpRequest({ method: 'GET', url: 'https://openrouter.ai/api/v1/models', headers: { 'Authorization': `Bearer ${cfg.OPENROUTER_API_KEY}` } });\n  const ms = Date.now() - t1;\n  claudeStatus = resp.data ? `✅ ${ms}ms` : '⚠️ Неизвестный ответ';\n} catch(e) { claudeStatus = `❌ ${e.message}`; }\n\n// Get balance\nasync function signedGet(endpoint, params) {\n  const timestamp = Date.now().toString();\n  const recvWindow = '5000';\n  const qs = Object.entries(params).map(([k,v]) => `${k}=${v}`).join('&');\n  const preSign = timestamp + apiKey + recvWindow + qs;\n  const signature = crypto.createHmac('sha256', apiSecret).update(preSign).digest('hex');\n  return this.helpers.httpRequest({\n    method: 'GET', url: `${baseUrl}${endpoint}?${qs}`,\n    headers: { 'X-BAPI-API-KEY': apiKey, 'X-BAPI-SIGN': signature, 'X-BAPI-TIMESTAMP': timestamp, 'X-BAPI-RECV-WINDOW': recvWindow, 'Content-Type': 'application/json' }\n  });\n}\n\nlet equity = 0;\ntry {\n  const balResp = await signedGet.call(this, '/v5/account/wallet-balance', { accountType: 'UNIFIED' });\n  equity = parseFloat(balResp.result?.list?.[0]?.totalEquity || 0);\n} catch(e) {}\n\n// Check health history errors\nconst healthErrors = store.health_errors || {};\nlet totalErrors24h = 0;\nconst errorSummary = {};\nconst cutoff24h = Date.now() - 24*60*60*1000;\nfor (const [wf, errors] of Object.entries(healthErrors)) {\n  const recent = (errors || []).filter(e => e.time > cutoff24h);\n  if (recent.length > 0) {\n    errorSummary[wf] = recent.length;\n    totalErrors24h += recent.length;\n  }\n}\n\nconst botStopped = store.botStopped || false;\nconst overallStatus = botStopped ? '⛔ БОТ ОСТАНОВЛЕН' : (totalErrors24h > 10 ? '⚠️ ЕСТЬ ПРОБЛЕМЫ' : '✅ ВСЕ СИСТЕМЫ ОК');\n\nlet msg = `🏥 <b>ЗДОРОВЬЕ БОТА</b>\\n\\n`;\nmsg += `<b>API СТАТУС:</b>\\n`;\nmsg += `${bybitStatus.startsWith('✅') ? '✅' : '❌'} Bybit API — ${bybitStatus}\\n`;\nmsg += `${claudeStatus.startsWith('✅') ? '✅' : '❌'} Claude API — ${claudeStatus}\\n\\n`;\nmsg += `<b>БАЛАНС:</b> $${equity.toFixed(2)}\\n`;\nmsg += `<b>Статус бота:</b> ${botStopped ? '⛔ Остановлен' : '🟢 Активен'}\\n\\n`;\n\nif (totalErrors24h > 0) {\n  msg += `<b>ОШИБКИ ЗА 24 ЧАСА:</b> ${totalErrors24h}\\n`;\n  for (const [wf, count] of Object.entries(errorSummary)) {\n    msg += `• ${wf}: ${count}\\n`;\n  }\n  msg += '\\n';\n}\n\nmsg += `<b>ОБЩИЙ СТАТУС:</b> ${overallStatus}\\n`;\nmsg += `\\n⏱ ${new Date().toLocaleString('ru-RU', { timeZone: 'Europe/Moscow' })}`;\nreturn [{ json: { message: msg } }];"
+      },
+      "id": "cmd-health",
+      "name": "CMD: /health",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [960, 2060]
+    },
+    {
+      "parameters": {
+        "jsCode": "// /errors — recent errors from all workflows\nconst store = $getWorkflowStaticData('global');\nconst healthErrors = store.health_errors || {};\nconst cutoff24h = Date.now() - 24*60*60*1000;\n\nlet allErrors = [];\nfor (const [wf, errors] of Object.entries(healthErrors)) {\n  for (const err of (errors || [])) {\n    if (err.time > cutoff24h) {\n      allErrors.push({ ...err, workflow: wf });\n    }\n  }\n}\nallErrors.sort((a,b) => b.time - a.time);\n\nlet msg = '🔍 <b>ПОСЛЕДНИЕ ОШИБКИ (24 часа):</b>\\n\\n';\n\nif (allErrors.length === 0) {\n  msg += '<i>Нет ошибок за последние 24 часа</i> ✅\\n';\n} else {\n  // Group by workflow and error type\n  const grouped = {};\n  for (const err of allErrors) {\n    const key = `${err.workflow}|${err.code || 'unknown'}`;\n    if (!grouped[key]) grouped[key] = { ...err, count: 0 };\n    grouped[key].count++;\n  }\n  \n  let i = 1;\n  for (const [, g] of Object.entries(grouped).slice(0, 10)) {\n    const time = new Date(g.time).toLocaleTimeString('ru-RU', { timeZone: 'Europe/Moscow', hour: '2-digit', minute: '2-digit', second: '2-digit' });\n    const level = g.code === '401' || g.code === '500' ? '🔴' : '🟡';\n    msg += `${i}. ${level} <b>${g.workflow}</b> — ${time}\\n`;\n    msg += `   ${g.code || ''} ${g.message || 'Unknown error'}\\n`;\n    msg += `   Повторов: ${g.count} раз\\n\\n`;\n    i++;\n  }\n}\n\nmsg += `⏱ ${new Date().toLocaleString('ru-RU', { timeZone: 'Europe/Moscow' })}`;\nreturn [{ json: { message: msg } }];"
+      },
+      "id": "cmd-errors",
+      "name": "CMD: /errors",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [960, 2200]
     },
     {
       "parameters": {
@@ -268,7 +375,13 @@ msg += '/status — текущие позиции, P&L, баланс\\n';\nmsg +
         [ { "node": "CMD: /mode", "type": "main", "index": 0 } ],
         [ { "node": "CMD: /help", "type": "main", "index": 0 } ],
         [ { "node": "CMD: /model", "type": "main", "index": 0 } ],
-        [ { "node": "CMD: /balance", "type": "main", "index": 0 } ]
+        [ { "node": "CMD: /balance", "type": "main", "index": 0 } ],
+        [ { "node": "CMD: /rejected", "type": "main", "index": 0 } ],
+        [ { "node": "CMD: /accepted", "type": "main", "index": 0 } ],
+        [ { "node": "CMD: /stats", "type": "main", "index": 0 } ],
+        [ { "node": "CMD: /explain", "type": "main", "index": 0 } ],
+        [ { "node": "CMD: /health", "type": "main", "index": 0 } ],
+        [ { "node": "CMD: /errors", "type": "main", "index": 0 } ]
       ]
     },
     "CMD: /status": {
@@ -299,6 +412,24 @@ msg += '/status — текущие позиции, P&L, баланс\\n';\nmsg +
       "main": [[ { "node": "Send Response", "type": "main", "index": 0 } ]]
     },
     "CMD: /balance": {
+      "main": [[ { "node": "Send Response", "type": "main", "index": 0 } ]]
+    },
+    "CMD: /rejected": {
+      "main": [[ { "node": "Send Response", "type": "main", "index": 0 } ]]
+    },
+    "CMD: /accepted": {
+      "main": [[ { "node": "Send Response", "type": "main", "index": 0 } ]]
+    },
+    "CMD: /stats": {
+      "main": [[ { "node": "Send Response", "type": "main", "index": 0 } ]]
+    },
+    "CMD: /explain": {
+      "main": [[ { "node": "Send Response", "type": "main", "index": 0 } ]]
+    },
+    "CMD: /health": {
+      "main": [[ { "node": "Send Response", "type": "main", "index": 0 } ]]
+    },
+    "CMD: /errors": {
       "main": [[ { "node": "Send Response", "type": "main", "index": 0 } ]]
     }
   },

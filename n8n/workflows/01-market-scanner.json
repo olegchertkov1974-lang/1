@@ -101,6 +101,19 @@
     },
     {
       "parameters": {
+        "jsCode": "// =============================================\n// STEP 5.5: Save analytics data for WF7 reporting\n// =============================================\nconst store = $getWorkflowStaticData('global');\nconst signal = $input.first().json;\n\nconst now = new Date();\nconst dateKey = `analytics_${now.toISOString().slice(0,10)}`;\nconst cycleId = `${now.getTime()}_${Math.random().toString(36).slice(2,8)}`;\n\n// Determine rejection reasons\nconst rejectionReasons = [];\nif (signal.action === 'WAIT' || !signal._pass) {\n  if (signal.confidence < 75) rejectionReasons.push('low_confidence');\n  if (signal.risk_reward_ratio < 3) rejectionReasons.push('low_rr');\n  if (signal.level_strength === 'weak') rejectionReasons.push('weak_level');\n  if (signal.timeframe_alignment === false) rejectionReasons.push('tf_misalignment');\n  // Check if signal is against senior TF trend\n  const trend4h = signal._metadata?.trend_4h || '';\n  if ((signal.action === 'BUY' && trend4h === 'down') ||\n      (signal.action === 'SELL' && trend4h === 'up')) {\n    rejectionReasons.push('against_trend');\n  }\n  if (rejectionReasons.length === 0 && signal.action === 'WAIT') {\n    rejectionReasons.push('wait_signal');\n  }\n}\n\nconst entry = {\n  timestamp: now.toISOString(),\n  cycle_id: cycleId,\n  pair: signal.pair,\n  volume_24h: signal._metadata?.volume24h || 0,\n  passed_volume_filter: true,\n  sent_to_claude: !signal._error,\n  claude_response: {\n    action: signal.action || 'WAIT',\n    confidence: signal.confidence || 0,\n    risk_reward_ratio: signal.risk_reward_ratio || 0,\n    level_strength: signal.level_strength || 'unknown',\n    trend_direction: signal.trend_direction || 'unknown',\n    timeframe_alignment: signal.timeframe_alignment || false,\n    reasoning: signal.reasoning || ''\n  },\n  rejection_reasons: rejectionReasons,\n  taken_to_trade: signal._pass === true\n};\n\n// Initialize analytics array for today if needed\nif (!store[dateKey]) store[dateKey] = [];\nstore[dateKey].push(entry);\n\n// Cleanup: remove analytics older than 30 days\nconst cutoff = new Date();\ncutoff.setDate(cutoff.getDate() - 30);\nconst cutoffStr = `analytics_${cutoff.toISOString().slice(0,10)}`;\nfor (const key of Object.keys(store)) {\n  if (key.startsWith('analytics_') && key < cutoffStr) {\n    delete store[key];\n  }\n}\n\n// Pass through original signal data\nreturn [{ json: signal }];"
+      },
+      "id": "save-analytics",
+      "name": "Save Analytics",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1620,
+        400
+      ]
+    },
+    {
+      "parameters": {
         "conditions": {
           "options": {
             "caseSensitive": true,
@@ -123,10 +136,10 @@
       },
       "id": "if-actionable",
       "name": "Is Actionable?",
-      "type": "n8n-nodes-base.filter",
+      "type": "n8n-nodes-base.if",
       "typeVersion": 2,
       "position": [
-        1740,
+        1840,
         400
       ]
     },
@@ -257,6 +270,17 @@
       ]
     },
     "Validate Signal Criteria": {
+      "main": [
+        [
+          {
+            "node": "Save Analytics",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Save Analytics": {
       "main": [
         [
           {

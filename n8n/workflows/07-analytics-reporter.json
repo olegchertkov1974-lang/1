@@ -1,0 +1,196 @@
+{
+  "name": "WF7 — Analytics Reporter (Gerchik System)",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "hours",
+              "hoursInterval": 4
+            }
+          ]
+        }
+      },
+      "id": "cron-4h",
+      "name": "Every 4 Hours",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        200,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "httpMethod": "GET",
+        "path": "report",
+        "responseMode": "onReceived",
+        "options": {}
+      },
+      "id": "webhook-report",
+      "name": "Webhook: Report",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        200,
+        520
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const cfg = $getWorkflowStaticData('global');\nif (!cfg._initialized) {\n  cfg.BYBIT_API_KEY = 'YOUR_BYBIT_API_KEY';\n  cfg.BYBIT_API_SECRET = 'YOUR_BYBIT_API_SECRET';\n  cfg.BYBIT_TESTNET = 'false';\n  cfg.TELEGRAM_CHAT_ID = '543663073';\n  cfg._initialized = true;\n}\nreturn [{ json: { status: 'ok' } }];"
+      },
+      "id": "config",
+      "name": "Config",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        420,
+        400
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// =============================================\n// Collect Analytics from global static data\n// =============================================\nconst cfg = $getWorkflowStaticData('global');\n\n// Get today's date in Moscow timezone (UTC+3)\nconst now = new Date();\nconst msk = new Date(now.getTime() + 3 * 60 * 60 * 1000);\nconst dateKey = msk.toISOString().slice(0, 10); // YYYY-MM-DD\n\n// Read analytics for today\nconst analyticsKey = `analytics_${dateKey}`;\nconst analytics = cfg[analyticsKey] || {};\n\n// Scanning stats\nconst pairsChecked = analytics.pairs_checked || 0;\nconst pairsPassedVolume = analytics.pairs_passed_volume || 0;\n\n// Claude analysis stats\nconst pairsSentToClaude = analytics.pairs_sent_to_claude || 0;\nconst signalsReceived = analytics.signals_received || 0;\nconst signalsRejected = analytics.signals_rejected || 0;\n\n// Rejection reasons breakdown\nconst rejections = analytics.rejection_reasons || {};\nconst weakLevel = rejections.weak_level || 0;\nconst lowConfidence = rejections.low_confidence || 0;\nconst lowRR = rejections.low_rr || 0;\nconst tfMisalignment = rejections.tf_misalignment || 0;\nconst againstTrend = rejections.against_trend || 0;\n\n// Active signals\nconst activeSignals = analytics.active_signals || [];\nconst signalsTaken = activeSignals.length;\n\nreturn [{\n  json: {\n    dateKey,\n    pairsChecked,\n    pairsPassedVolume,\n    pairsSentToClaude,\n    signalsReceived,\n    signalsRejected,\n    weakLevel,\n    lowConfidence,\n    lowRR,\n    tfMisalignment,\n    againstTrend,\n    signalsTaken,\n    activeSignals\n  }\n}];"
+      },
+      "id": "collect-analytics",
+      "name": "Collect Analytics",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        640,
+        400
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Pure JS SHA-256 + HMAC (n8n Cloud compatible)\nfunction sha256(b){const K=[0x428a2f98,0x71374491,0xb5c0fbcf,0xe9b5dba5,0x3956c25b,0x59f111f1,0x923f82a4,0xab1c5ed5,0xd807aa98,0x12835b01,0x243185be,0x550c7dc3,0x72be5d74,0x80deb1fe,0x9bdc06a7,0xc19bf174,0xe49b69c1,0xefbe4786,0x0fc19dc6,0x240ca1cc,0x2de92c6f,0x4a7484aa,0x5cb0a9dc,0x76f988da,0x983e5152,0xa831c66d,0xb00327c8,0xbf597fc7,0xc6e00bf3,0xd5a79147,0x06ca6351,0x14292967,0x27b70a85,0x2e1b2138,0x4d2c6dfc,0x53380d13,0x650a7354,0x766a0abb,0x81c2c92e,0x92722c85,0xa2bfe8a1,0xa81a664b,0xc24b8b70,0xc76c51a3,0xd192e819,0xd6990624,0xf40e3585,0x106aa070,0x19a4c116,0x1e376c08,0x2748774c,0x34b0bcb5,0x391c0cb3,0x4ed8aa4a,0x5b9cca4f,0x682e6ff3,0x748f82ee,0x78a5636f,0x84c87814,0x8cc70208,0x90befffa,0xa4506ceb,0xbef9a3f7,0xc67178f2];let h0=0x6a09e667,h1=0xbb67ae85,h2=0x3c6ef372,h3=0xa54ff53a,h4=0x510e527f,h5=0x9b05688c,h6=0x1f83d9ab,h7=0x5be0cd19;const m=b.slice();const bl=m.length*8;m.push(0x80);while((m.length+8)%64!==0)m.push(0);m.push(0,0,0,0,(bl>>>24)&0xff,(bl>>>16)&0xff,(bl>>>8)&0xff,bl&0xff);function rr(v,n){return((v>>>n)|(v<<(32-n)))>>>0;}for(let i=0;i<m.length;i+=64){const w=new Array(64);for(let j=0;j<16;j++)w[j]=((m[i+j*4]<<24)|(m[i+j*4+1]<<16)|(m[i+j*4+2]<<8)|m[i+j*4+3])>>>0;for(let j=16;j<64;j++){const s0=rr(w[j-15],7)^rr(w[j-15],18)^(w[j-15]>>>3);const s1=rr(w[j-2],17)^rr(w[j-2],19)^(w[j-2]>>>10);w[j]=(w[j-16]+s0+w[j-7]+s1)>>>0;}let a=h0,bb=h1,c=h2,d=h3,e=h4,f=h5,g=h6,hh=h7;for(let j=0;j<64;j++){const S1=rr(e,6)^rr(e,11)^rr(e,25);const ch=(e&f)^((~e>>>0)&g);const t1=(hh+S1+ch+K[j]+w[j])>>>0;const S0=rr(a,2)^rr(a,13)^rr(a,22);const maj=(a&bb)^(a&c)^(bb&c);const t2=(S0+maj)>>>0;hh=g;g=f;f=e;e=(d+t1)>>>0;d=c;c=bb;bb=a;a=(t1+t2)>>>0;}h0=(h0+a)>>>0;h1=(h1+bb)>>>0;h2=(h2+c)>>>0;h3=(h3+d)>>>0;h4=(h4+e)>>>0;h5=(h5+f)>>>0;h6=(h6+g)>>>0;h7=(h7+hh)>>>0;}const r=[];[h0,h1,h2,h3,h4,h5,h6,h7].forEach(v=>{r.push((v>>>24)&0xff,(v>>>16)&0xff,(v>>>8)&0xff,v&0xff);});return r;}\nfunction hmacSHA256(ks,ms){const toB=s=>Array.from(s).map(c=>c.charCodeAt(0));let k=toB(ks);if(k.length>64)k=sha256(k);while(k.length<64)k.push(0);return sha256([...k.map(b=>b^0x5c),...sha256([...k.map(b=>b^0x36),...toB(ms)])]).map(b=>b.toString(16).padStart(2,'0')).join('');}\n// =============================================\n// Get Balance & Positions from Bybit\n// =============================================\nconst cfg = $getWorkflowStaticData('global');\nconst analyticsData = $input.first().json;\n\nconst isTestnet = (cfg.BYBIT_TESTNET || 'true').toLowerCase() === 'true';\nconst baseUrl = isTestnet ? 'https://api-testnet.bybit.com' : 'https://api.bybit.com';\nconst apiKey = cfg.BYBIT_API_KEY;\nconst apiSecret = cfg.BYBIT_API_SECRET;\n\nasync function signedGet(endpoint, params) {\n  const timestamp = Date.now().toString();\n  const recvWindow = '5000';\n  const qs = Object.entries(params).map(([k,v]) => `${k}=${v}`).join('&');\n  const preSign = timestamp + apiKey + recvWindow + qs;\n  const signature = hmacSHA256(apiSecret, preSign);\n  return this.helpers.httpRequest({\n    method: 'GET',\n    url: `${baseUrl}${endpoint}?${qs}`,\n    headers: {\n      'X-BAPI-API-KEY': apiKey, 'X-BAPI-SIGN': signature,\n      'X-BAPI-TIMESTAMP': timestamp, 'X-BAPI-RECV-WINDOW': recvWindow,\n      'Content-Type': 'application/json'\n    }\n  });\n}\n\n// Get wallet balance\nlet totalEquity = 0;\ntry {\n  const balResp = await signedGet.call(this, '/v5/account/wallet-balance', { accountType: 'UNIFIED' });\n  totalEquity = parseFloat(balResp.result.list[0].totalEquity);\n} catch(e) {}\n\n// Get open positions\nlet openPositions = [];\ntry {\n  const posResp = await signedGet.call(this, '/v5/position/list', {\n    category: 'linear', settleCoin: 'USDT'\n  });\n  if (posResp.retCode === 0) {\n    openPositions = (posResp.result?.list || []).filter(p => parseFloat(p.size) > 0);\n  }\n} catch(e) {}\n\n// Get closed P&L for today\nconst today = new Date();\ntoday.setHours(0, 0, 0, 0);\nconst startTime = today.getTime().toString();\n\nlet dailyPnl = 0;\ntry {\n  const pnlResp = await signedGet.call(this, '/v5/position/closed-pnl', {\n    category: 'linear', startTime, limit: '100'\n  });\n  if (pnlResp.retCode === 0) {\n    dailyPnl = (pnlResp.result?.list || []).reduce((sum, p) => sum + parseFloat(p.closedPnl), 0);\n  }\n} catch(e) {}\n\n// Add unrealized P&L\nconst unrealizedPnl = openPositions.reduce((sum, p) => sum + parseFloat(p.unrealisedPnl || 0), 0);\nconst totalDailyPnl = dailyPnl + unrealizedPnl;\nconst dailyLossPercent = totalEquity > 0 ? Math.abs(Math.min(totalDailyPnl, 0)) / totalEquity * 100 : 0;\n\nreturn [{\n  json: {\n    ...analyticsData,\n    totalEquity,\n    openPositions: openPositions.length,\n    maxPositions: parseInt(cfg.MAX_OPEN_POSITIONS || '3'),\n    dailyPnl: totalDailyPnl.toFixed(2),\n    dailyPnlPercent: totalEquity > 0 ? (totalDailyPnl / totalEquity * 100).toFixed(2) : '0.00',\n    dailyLossUsed: dailyLossPercent.toFixed(2),\n    maxDailyLoss: parseFloat(cfg.MAX_DAILY_LOSS || '3')\n  }\n}];"
+      },
+      "id": "get-balance",
+      "name": "Get Balance & Positions",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        860,
+        400
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// =============================================\n// Format Telegram Report\n// =============================================\nconst data = $input.first().json;\n\n// Moscow time (UTC+3)\nconst now = new Date();\nconst msk = new Date(now.getTime() + 3 * 60 * 60 * 1000);\nconst dateStr = msk.toISOString().slice(0, 10);\nconst timeStr = msk.toISOString().slice(11, 16);\n\n// Calculate minutes until next scan (4h interval)\nconst mskMinutes = msk.getUTCHours() * 60 + msk.getUTCMinutes();\nconst intervalMin = 240; // 4 hours\nconst nextScanMin = intervalMin - (mskMinutes % intervalMin);\n\nlet msg = `📊 ОТЧЁТ БОТА — ${dateStr}, ${timeStr} (MSK)\\n\\n`;\n\nmsg += `🔍 СКАНИРОВАНИЕ:\\n`;\nmsg += `• Пар проверено: ${data.pairsChecked}\\n`;\nmsg += `• Пар прошло фильтр объёма (>$50M): ${data.pairsPassedVolume}\\n\\n`;\n\nmsg += `🧠 АНАЛИЗ CLAUDE:\\n`;\nmsg += `• Пар отправлено на анализ: ${data.pairsSentToClaude}\\n`;\nmsg += `• Сигналов получено: ${data.signalsReceived}\\n`;\nmsg += `• Отклонено: ${data.signalsRejected}\\n\\n`;\n\nmsg += `❌ ПРИЧИНЫ ОТКЛОНЕНИЯ:\\n`;\nmsg += `• Слабый уровень (weak): ${data.weakLevel}\\n`;\nmsg += `• Таймфреймы не совпадают: ${data.tfMisalignment}\\n`;\nmsg += `• R:R ниже 1:3: ${data.lowRR}\\n`;\nmsg += `• Confidence ниже 75: ${data.lowConfidence}\\n`;\nmsg += `• Против тренда старшего ТФ: ${data.againstTrend}\\n\\n`;\n\nmsg += `✅ ВЗЯТО В РАБОТУ: ${data.signalsTaken}\\n`;\nif (data.activeSignals && data.activeSignals.length > 0) {\n  data.activeSignals.forEach((s, i) => {\n    msg += `\\n<b>${i + 1}. ${s.pair || s.symbol}</b> ${s.direction || s.side}\\n`;\n    msg += `   Entry: ${s.entry || s.entry_price} | SL: ${s.sl || s.stop_loss} | TP: ${s.tp || s.take_profit}\\n`;\n    msg += `   Уровень: ${s.level_strength || '-'} | R:R ${s.rr || s.risk_reward || '-'} | Conf: ${s.confidence || '-'}%\\n`;\n    msg += `   ${s.reasoning || ''}\\n`;\n  });\n} else {\n  msg += `Нет сигналов, все пары отклонены\\n`;\n}\n\nmsg += `\\n📈 ОТКРЫТЫЕ ПОЗИЦИИ: ${data.openPositions} из ${data.maxPositions}\\n`;\nmsg += `📉 P&L СЕГОДНЯ: $${data.dailyPnl} (${data.dailyPnlPercent}%)\\n`;\nmsg += `💰 БАЛАНС: $${parseFloat(data.totalEquity).toFixed(2)}\\n`;\nmsg += `🛡 ДНЕВНОЙ ЛИМИТ ПОТЕРЬ: использовано ${data.dailyLossUsed}% из ${data.maxDailyLoss}%\\n`;\nmsg += `⏱ Следующее сканирование: через ${nextScanMin} мин`;\n\nreturn [{ json: { message: msg } }];"
+      },
+      "id": "format-report",
+      "name": "Format Report",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1080,
+        400
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "sendMessage",
+        "chatId": "={{ $getWorkflowStaticData('global').TELEGRAM_CHAT_ID }}",
+        "text": "={{ $json.message }}",
+        "additionalFields": {
+          "parse_mode": "HTML"
+        }
+      },
+      "id": "send-report",
+      "name": "TG: Send Report",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        1300,
+        400
+      ],
+      "credentials": {
+        "telegramApi": {
+          "id": "TELEGRAM_CREDENTIALS_ID",
+          "name": "Telegram Bot"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Every 4 Hours": {
+      "main": [
+        [
+          {
+            "node": "Config",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Webhook: Report": {
+      "main": [
+        [
+          {
+            "node": "Config",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Config": {
+      "main": [
+        [
+          {
+            "node": "Collect Analytics",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Collect Analytics": {
+      "main": [
+        [
+          {
+            "node": "Get Balance & Positions",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Balance & Positions": {
+      "main": [
+        [
+          {
+            "node": "Format Report",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Format Report": {
+      "main": [
+        [
+          {
+            "node": "TG: Send Report",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "tags": [
+    {
+      "name": "gerchik-bot"
+    },
+    {
+      "name": "analytics"
+    }
+  ]
+}

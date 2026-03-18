@@ -1,0 +1,169 @@
+{
+  "name": "WF8 — Медик (Bot Health Monitor)",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 2
+            }
+          ]
+        }
+      },
+      "id": "cron-2m",
+      "name": "Every 2 Minutes",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [200, 400]
+    },
+    {
+      "parameters": {
+        "jsCode": "const cfg = $getWorkflowStaticData('global');\nif (!cfg._initialized) {\n  cfg.BYBIT_API_KEY = 'YOUR_BYBIT_API_KEY';\n  cfg.BYBIT_API_SECRET = 'YOUR_BYBIT_API_SECRET';\n  cfg.BYBIT_TESTNET = 'false';\n  cfg.TELEGRAM_CHAT_ID = '543663073';\n  cfg.N8N_API_URL = 'http://localhost:5678/api/v1';\n  cfg.MAX_OPEN_POSITIONS = '5';\n  cfg._initialized = true;\n}\nreturn [{ json: { status: 'ok' } }];"
+      },
+      "id": "config",
+      "name": "Config",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [320, 400]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Pure JS SHA-256 + HMAC (n8n Cloud compatible)\nfunction sha256(b){const K=[0x428a2f98,0x71374491,0xb5c0fbcf,0xe9b5dba5,0x3956c25b,0x59f111f1,0x923f82a4,0xab1c5ed5,0xd807aa98,0x12835b01,0x243185be,0x550c7dc3,0x72be5d74,0x80deb1fe,0x9bdc06a7,0xc19bf174,0xe49b69c1,0xefbe4786,0x0fc19dc6,0x240ca1cc,0x2de92c6f,0x4a7484aa,0x5cb0a9dc,0x76f988da,0x983e5152,0xa831c66d,0xb00327c8,0xbf597fc7,0xc6e00bf3,0xd5a79147,0x06ca6351,0x14292967,0x27b70a85,0x2e1b2138,0x4d2c6dfc,0x53380d13,0x650a7354,0x766a0abb,0x81c2c92e,0x92722c85,0xa2bfe8a1,0xa81a664b,0xc24b8b70,0xc76c51a3,0xd192e819,0xd6990624,0xf40e3585,0x106aa070,0x19a4c116,0x1e376c08,0x2748774c,0x34b0bcb5,0x391c0cb3,0x4ed8aa4a,0x5b9cca4f,0x682e6ff3,0x748f82ee,0x78a5636f,0x84c87814,0x8cc70208,0x90befffa,0xa4506ceb,0xbef9a3f7,0xc67178f2];let h0=0x6a09e667,h1=0xbb67ae85,h2=0x3c6ef372,h3=0xa54ff53a,h4=0x510e527f,h5=0x9b05688c,h6=0x1f83d9ab,h7=0x5be0cd19;const m=b.slice();const bl=m.length*8;m.push(0x80);while((m.length+8)%64!==0)m.push(0);m.push(0,0,0,0,(bl>>>24)&0xff,(bl>>>16)&0xff,(bl>>>8)&0xff,bl&0xff);function rr(v,n){return((v>>>n)|(v<<(32-n)))>>>0;}for(let i=0;i<m.length;i+=64){const w=new Array(64);for(let j=0;j<16;j++)w[j]=((m[i+j*4]<<24)|(m[i+j*4+1]<<16)|(m[i+j*4+2]<<8)|m[i+j*4+3])>>>0;for(let j=16;j<64;j++){const s0=rr(w[j-15],7)^rr(w[j-15],18)^(w[j-15]>>>3);const s1=rr(w[j-2],17)^rr(w[j-2],19)^(w[j-2]>>>10);w[j]=(w[j-16]+s0+w[j-7]+s1)>>>0;}let a=h0,bb=h1,c=h2,d=h3,e=h4,f=h5,g=h6,hh=h7;for(let j=0;j<64;j++){const S1=rr(e,6)^rr(e,11)^rr(e,25);const ch=(e&f)^((~e>>>0)&g);const t1=(hh+S1+ch+K[j]+w[j])>>>0;const S0=rr(a,2)^rr(a,13)^rr(a,22);const maj=(a&bb)^(a&c)^(bb&c);const t2=(S0+maj)>>>0;hh=g;g=f;f=e;e=(d+t1)>>>0;d=c;c=bb;bb=a;a=(t1+t2)>>>0;}h0=(h0+a)>>>0;h1=(h1+bb)>>>0;h2=(h2+c)>>>0;h3=(h3+d)>>>0;h4=(h4+e)>>>0;h5=(h5+f)>>>0;h6=(h6+g)>>>0;h7=(h7+hh)>>>0;}const r=[];[h0,h1,h2,h3,h4,h5,h6,h7].forEach(v=>{r.push((v>>>24)&0xff,(v>>>16)&0xff,(v>>>8)&0xff,v&0xff);});return r;}\nfunction hmacSHA256(ks,ms){const toB=s=>Array.from(s).map(c=>c.charCodeAt(0));let k=toB(ks);if(k.length>64)k=sha256(k);while(k.length<64)k.push(0);return sha256([...k.map(b=>b^0x5c),...sha256([...k.map(b=>b^0x36),...toB(ms)])]).map(b=>b.toString(16).padStart(2,'0')).join('');}\n\n// =============================================\n// Bot Health Monitor — All Health Checks\n// =============================================\nconst cfg = $getWorkflowStaticData('global');\n\nconst isTestnet = (cfg.BYBIT_TESTNET || 'true').toLowerCase() === 'true';\nconst baseUrl = isTestnet ? 'https://api-testnet.bybit.com' : 'https://api.bybit.com';\nconst apiKey = cfg.BYBIT_API_KEY;\nconst apiSecret = cfg.BYBIT_API_SECRET;\nconst MAX_OPEN_POSITIONS = parseInt(cfg.MAX_OPEN_POSITIONS || '5');\n\n// Helper: Moscow time\nfunction moscowNow() {\n  return new Date(Date.now() + 3 * 60 * 60 * 1000);\n}\n\n// Signed GET request helper\nasync function signedGet(endpoint, params) {\n  const timestamp = Date.now().toString();\n  const recvWindow = '5000';\n  const qs = Object.entries(params).map(([k,v]) => `${k}=${v}`).join('&');\n  const preSign = timestamp + apiKey + recvWindow + qs;\n  const signature = hmacSHA256(apiSecret, preSign);\n  return this.helpers.httpRequest({\n    method: 'GET',\n    url: `${baseUrl}${endpoint}?${qs}`,\n    headers: {\n      'X-BAPI-API-KEY': apiKey,\n      'X-BAPI-SIGN': signature,\n      'X-BAPI-TIMESTAMP': timestamp,\n      'X-BAPI-RECV-WINDOW': recvWindow,\n      'Content-Type': 'application/json'\n    }\n  });\n}\n\nconst alerts = [];\nconst now = Date.now();\n\n// Initialize health data in static data\nif (!cfg.health_errors) cfg.health_errors = {};\nif (!cfg.health_alerts_sent) cfg.health_alerts_sent = {};\nif (!cfg.health_history) cfg.health_history = [];\nif (!cfg.health_api_down_since) cfg.health_api_down_since = null;\nif (!cfg.health_issues_active) cfg.health_issues_active = {};\n\n// Startup detection\nif (!cfg.health_started) {\n  cfg.health_started = true;\n  alerts.push({\n    level: 'INFO',\n    key: 'startup',\n    message: '\\ud83d\\udd04 Bot Medic \\u043f\\u0435\\u0440\\u0435\\u0437\\u0430\\u043f\\u0443\\u0441\\u0442\\u0438\\u043b\\u0441\\u044f, \\u043f\\u0440\\u043e\\u0432\\u0435\\u0440\\u044f\\u044e \\u0441\\u0438\\u0441\\u0442\\u0435\\u043c\\u044b...'\n  });\n}\n\n// =============================================\n// a) API Health Check\n// =============================================\nlet apiOk = false;\nlet apiResponseTime = 0;\ntry {\n  const startTime = Date.now();\n  const resp = await this.helpers.httpRequest({\n    method: 'GET',\n    url: `${baseUrl}/v5/market/time`\n  });\n  apiResponseTime = Date.now() - startTime;\n\n  if (resp.retCode === 0) {\n    apiOk = true;\n    // Recovery check\n    if (cfg.health_api_down_since) {\n      const downDuration = now - cfg.health_api_down_since;\n      alerts.push({\n        level: 'RECOVERY',\n        key: 'api_down',\n        description: 'Bybit API \\u0431\\u044b\\u043b\\u043e \\u043d\\u0435\\u0434\\u043e\\u0441\\u0442\\u0443\\u043f\\u043d\\u043e',\n        duration: Math.round(downDuration / 1000) + ' \\u0441\\u0435\\u043a'\n      });\n      cfg.health_api_down_since = null;\n      // Restore bot if it was stopped by medic\n      if (cfg.botStopped && cfg.botStoppedByMedic) {\n        cfg.botStopped = false;\n        cfg.botStoppedByMedic = false;\n      }\n    }\n    if (apiResponseTime > 5000) {\n      alerts.push({\n        level: 'WARNING',\n        key: 'api_slow',\n        description: `Bybit API \\u043e\\u0442\\u0432\\u0435\\u0447\\u0430\\u0435\\u0442 \\u043c\\u0435\\u0434\\u043b\\u0435\\u043d\\u043d\\u043e: ${apiResponseTime}ms`,\n        cause: '\\u0412\\u044b\\u0441\\u043e\\u043a\\u0430\\u044f \\u043d\\u0430\\u0433\\u0440\\u0443\\u0437\\u043a\\u0430 \\u043d\\u0430 API \\u0438\\u043b\\u0438 \\u043f\\u0440\\u043e\\u0431\\u043b\\u0435\\u043c\\u044b \\u0441 \\u0441\\u0435\\u0442\\u044c\\u044e',\n        recommendation: '\\u041f\\u0440\\u043e\\u0432\\u0435\\u0440\\u044c\\u0442\\u0435 \\u0441\\u0442\\u0430\\u0442\\u0443\\u0441 Bybit \\u043d\\u0430 status.bybit.com'\n      });\n    }\n  } else {\n    throw new Error(`retCode=${resp.retCode}: ${resp.retMsg}`);\n  }\n} catch(e) {\n  apiOk = false;\n  if (!cfg.health_api_down_since) {\n    cfg.health_api_down_since = now;\n  }\n  const downDuration = now - cfg.health_api_down_since;\n\n  if (downDuration > 2 * 60 * 1000) {\n    // API down > 2 minutes — stop bot\n    cfg.botStopped = true;\n    cfg.botStoppedByMedic = true;\n    cfg.stoppedAt = new Date().toISOString();\n    alerts.push({\n      level: 'CRITICAL',\n      key: 'api_down',\n      description: 'Bybit API \\u043d\\u0435\\u0434\\u043e\\u0441\\u0442\\u0443\\u043f\\u043d\\u043e',\n      error_code: 'API_UNREACHABLE',\n      error_text: e.message,\n      duration: Math.round(downDuration / 1000) + ' \\u0441\\u0435\\u043a',\n      consequences: '\\u0422\\u043e\\u0440\\u0433\\u043e\\u0432\\u043b\\u044f \\u043d\\u0435\\u0432\\u043e\\u0437\\u043c\\u043e\\u0436\\u043d\\u0430, \\u043e\\u0440\\u0434\\u0435\\u0440\\u0430 \\u043d\\u0435 \\u043e\\u0442\\u043f\\u0440\\u0430\\u0432\\u043b\\u044f\\u044e\\u0442\\u0441\\u044f',\n      auto_action: '\\u0411\\u043e\\u0442 \\u043e\\u0441\\u0442\\u0430\\u043d\\u043e\\u0432\\u043b\\u0435\\u043d (botStopped=true)',\n      manual_action: '\\u041f\\u0440\\u043e\\u0432\\u0435\\u0440\\u044c\\u0442\\u0435 status.bybit.com \\u0438 \\u043f\\u0435\\u0440\\u0435\\u0437\\u0430\\u043f\\u0443\\u0441\\u0442\\u0438\\u0442\\u0435 \\u0431\\u043e\\u0442\\u0430 \\u043a\\u043e\\u0433\\u0434\\u0430 API \\u0432\\u043e\\u0441\\u0441\\u0442\\u0430\\u043d\\u043e\\u0432\\u0438\\u0442\\u0441\\u044f'\n    });\n  } else {\n    alerts.push({\n      level: 'WARNING',\n      key: 'api_down',\n      description: `Bybit API \\u043d\\u0435\\u0434\\u043e\\u0441\\u0442\\u0443\\u043f\\u043d\\u043e (${Math.round(downDuration / 1000)} \\u0441\\u0435\\u043a)`,\n      cause: e.message,\n      recommendation: '\\u041e\\u0436\\u0438\\u0434\\u0430\\u043d\\u0438\\u0435 \\u0432\\u043e\\u0441\\u0441\\u0442\\u0430\\u043d\\u043e\\u0432\\u043b\\u0435\\u043d\\u0438\\u044f. \\u0411\\u043e\\u0442 \\u0431\\u0443\\u0434\\u0435\\u0442 \\u043e\\u0441\\u0442\\u0430\\u043d\\u043e\\u0432\\u043b\\u0435\\u043d \\u0447\\u0435\\u0440\\u0435\\u0437 2 \\u043c\\u0438\\u043d.'\n    });\n  }\n}\n\n// =============================================\n// b) Balance & Positions (only if API is up)\n// =============================================\nlet totalEquity = 0;\nlet positions = [];\n\nif (apiOk) {\n  // Get wallet balance\n  try {\n    const balResp = await signedGet.call(this, '/v5/account/wallet-balance', { accountType: 'UNIFIED' });\n    if (balResp.retCode === 0) {\n      totalEquity = parseFloat(balResp.result.list[0].totalEquity || '0');\n      if (totalEquity <= 0) {\n        alerts.push({\n          level: 'CRITICAL',\n          key: 'zero_balance',\n          description: `\\u0411\\u0430\\u043b\\u0430\\u043d\\u0441 \\u0440\\u0430\\u0432\\u0435\\u043d $${totalEquity.toFixed(2)}`,\n          error_code: 'ZERO_BALANCE',\n          error_text: '\\u041d\\u0435\\u0434\\u043e\\u0441\\u0442\\u0430\\u0442\\u043e\\u0447\\u043d\\u043e \\u0441\\u0440\\u0435\\u0434\\u0441\\u0442\\u0432 \\u0434\\u043b\\u044f \\u0442\\u043e\\u0440\\u0433\\u043e\\u0432\\u043b\\u0438',\n          duration: '-',\n          consequences: '\\u0422\\u043e\\u0440\\u0433\\u043e\\u0432\\u043b\\u044f \\u043d\\u0435\\u0432\\u043e\\u0437\\u043c\\u043e\\u0436\\u043d\\u0430',\n          auto_action: '\\u041c\\u043e\\u043d\\u0438\\u0442\\u043e\\u0440\\u0438\\u043d\\u0433 \\u043f\\u0440\\u043e\\u0434\\u043e\\u043b\\u0436\\u0430\\u0435\\u0442\\u0441\\u044f',\n          manual_action: '\\u041f\\u043e\\u043f\\u043e\\u043b\\u043d\\u0438\\u0442\\u0435 \\u0441\\u0447\\u0435\\u0442 \\u0438\\u043b\\u0438 \\u043f\\u0440\\u043e\\u0432\\u0435\\u0440\\u044c\\u0442\\u0435 \\u0430\\u043a\\u043a\\u0430\\u0443\\u043d\\u0442'\n        });\n      }\n    }\n  } catch(e) {}\n\n  // Get positions\n  try {\n    const posResp = await signedGet.call(this, '/v5/position/list', { category: 'linear', settleCoin: 'USDT' });\n    if (posResp.retCode === 0) {\n      positions = (posResp.result?.list || []).filter(p => parseFloat(p.size) > 0);\n\n      // Check positions count\n      if (positions.length > MAX_OPEN_POSITIONS) {\n        alerts.push({\n          level: 'WARNING',\n          key: 'too_many_positions',\n          description: `\\u041e\\u0442\\u043a\\u0440\\u044b\\u0442\\u043e ${positions.length} \\u043f\\u043e\\u0437\\u0438\\u0446\\u0438\\u0439 (\\u043c\\u0430\\u043a\\u0441: ${MAX_OPEN_POSITIONS})`,\n          cause: '\\u041f\\u0440\\u0435\\u0432\\u044b\\u0448\\u0435\\u043d \\u043b\\u0438\\u043c\\u0438\\u0442 \\u043e\\u0442\\u043a\\u0440\\u044b\\u0442\\u044b\\u0445 \\u043f\\u043e\\u0437\\u0438\\u0446\\u0438\\u0439',\n          recommendation: '\\u041f\\u0440\\u043e\\u0432\\u0435\\u0440\\u044c\\u0442\\u0435 \\u043e\\u0442\\u043a\\u0440\\u044b\\u0442\\u044b\\u0435 \\u043f\\u043e\\u0437\\u0438\\u0446\\u0438\\u0438 \\u0438 \\u0437\\u0430\\u043a\\u0440\\u043e\\u0439\\u0442\\u0435 \\u043b\\u0438\\u0448\\u043d\\u0438\\u0435'\n        });\n      }\n\n      // Check positions without stop-loss\n      for (const pos of positions) {\n        const sl = parseFloat(pos.stopLoss || '0');\n        if (sl === 0) {\n          alerts.push({\n            level: 'CRITICAL',\n            key: `no_sl_${pos.symbol}`,\n            description: `\\u041f\\u043e\\u0437\\u0438\\u0446\\u0438\\u044f ${pos.symbol} \\u0431\\u0435\\u0437 \\u0441\\u0442\\u043e\\u043f-\\u043b\\u043e\\u0441\\u0441\\u0430!`,\n            error_code: 'NO_STOP_LOSS',\n            error_text: `${pos.side} ${pos.size} ${pos.symbol}, \\u0432\\u0445\\u043e\\u0434: ${pos.avgPrice}`,\n            duration: '-',\n            consequences: '\\u041d\\u0435\\u043e\\u0433\\u0440\\u0430\\u043d\\u0438\\u0447\\u0435\\u043d\\u043d\\u044b\\u0439 \\u0440\\u0438\\u0441\\u043a \\u043f\\u043e\\u0442\\u0435\\u0440\\u044c',\n            auto_action: '\\u0417\\u0430\\u043f\\u0438\\u0441\\u044c \\u0432 \\u043b\\u043e\\u0433 (\\u0430\\u0432\\u0442\\u043e-SL \\u043d\\u0435\\u0434\\u043e\\u0441\\u0442\\u0443\\u043f\\u0435\\u043d)',\n            manual_action: '\\u0423\\u0441\\u0442\\u0430\\u043d\\u043e\\u0432\\u0438\\u0442\\u0435 \\u0441\\u0442\\u043e\\u043f-\\u043b\\u043e\\u0441\\u0441 \\u0432\\u0440\\u0443\\u0447\\u043d\\u0443\\u044e \\u0438\\u043b\\u0438 \\u0447\\u0435\\u0440\\u0435\\u0437 Telegram'\n          });\n        }\n\n        // Check position age > 24h\n        const createdTime = parseInt(pos.createdTime || '0');\n        if (createdTime > 0 && (now - createdTime) > 24 * 60 * 60 * 1000) {\n          const ageHours = Math.round((now - createdTime) / (60 * 60 * 1000));\n          alerts.push({\n            level: 'WARNING',\n            key: `old_pos_${pos.symbol}`,\n            description: `\\u041f\\u043e\\u0437\\u0438\\u0446\\u0438\\u044f ${pos.symbol} \\u043e\\u0442\\u043a\\u0440\\u044b\\u0442\\u0430 ${ageHours} \\u0447\\u0430\\u0441\\u043e\\u0432`,\n            cause: '\\u041f\\u043e\\u0437\\u0438\\u0446\\u0438\\u044f \\u043d\\u0435 \\u0437\\u0430\\u043a\\u0440\\u044b\\u0442\\u0430 \\u0431\\u043e\\u043b\\u0435\\u0435 24 \\u0447\\u0430\\u0441\\u043e\\u0432',\n            recommendation: '\\u041f\\u0440\\u043e\\u0432\\u0435\\u0440\\u044c\\u0442\\u0435 \\u0430\\u043a\\u0442\\u0443\\u0430\\u043b\\u044c\\u043d\\u043e\\u0441\\u0442\\u044c \\u043f\\u043e\\u0437\\u0438\\u0446\\u0438\\u0438 \\u0438 \\u0440\\u0430\\u0441\\u0441\\u043c\\u043e\\u0442\\u0440\\u0438\\u0442\\u0435 \\u0437\\u0430\\u043a\\u0440\\u044b\\u0442\\u0438\\u0435'\n          });\n        }\n      }\n    }\n  } catch(e) {}\n\n  // =============================================\n  // c) Daily P&L Monitoring\n  // =============================================\n  try {\n    const todayStart = new Date();\n    todayStart.setUTCHours(0, 0, 0, 0);\n    const startTime = todayStart.getTime().toString();\n\n    const pnlResp = await signedGet.call(this, '/v5/position/closed-pnl', {\n      category: 'linear', startTime, limit: '100'\n    });\n    if (pnlResp.retCode === 0) {\n      const dailyPnl = (pnlResp.result?.list || []).reduce((sum, p) => sum + parseFloat(p.closedPnl), 0);\n\n      // Track hourly balance snapshots\n      if (!cfg.health_balance_history) cfg.health_balance_history = [];\n      cfg.health_balance_history.push({ ts: now, equity: totalEquity });\n      // Keep only last 24h of snapshots\n      cfg.health_balance_history = cfg.health_balance_history.filter(h => now - h.ts < 24 * 60 * 60 * 1000);\n\n      // Check if balance dropped 5%+ in last hour\n      const oneHourAgo = now - 60 * 60 * 1000;\n      const hourOldSnapshots = cfg.health_balance_history.filter(h => h.ts <= oneHourAgo);\n      if (hourOldSnapshots.length > 0) {\n        const oldEquity = hourOldSnapshots[hourOldSnapshots.length - 1].equity;\n        if (oldEquity > 0) {\n          const dropPercent = ((oldEquity - totalEquity) / oldEquity) * 100;\n          if (dropPercent >= 5) {\n            alerts.push({\n              level: 'CRITICAL',\n              key: 'balance_drop_5pct',\n              description: `\\u0411\\u0430\\u043b\\u0430\\u043d\\u0441 \\u0443\\u043f\\u0430\\u043b \\u043d\\u0430 ${dropPercent.toFixed(1)}% \\u0437\\u0430 \\u043f\\u043e\\u0441\\u043b\\u0435\\u0434\\u043d\\u0438\\u0439 \\u0447\\u0430\\u0441`,\n              error_code: 'BALANCE_DROP',\n              error_text: `$${oldEquity.toFixed(2)} \\u2192 $${totalEquity.toFixed(2)} (-${dropPercent.toFixed(1)}%)`,\n              duration: '1 \\u0447\\u0430\\u0441',\n              consequences: '\\u0411\\u044b\\u0441\\u0442\\u0440\\u0430\\u044f \\u043f\\u043e\\u0442\\u0435\\u0440\\u044f \\u043a\\u0430\\u043f\\u0438\\u0442\\u0430\\u043b\\u0430',\n              auto_action: '\\u041c\\u043e\\u043d\\u0438\\u0442\\u043e\\u0440\\u0438\\u043d\\u0433 \\u043f\\u0440\\u043e\\u0434\\u043e\\u043b\\u0436\\u0430\\u0435\\u0442\\u0441\\u044f',\n              manual_action: '\\u041f\\u0440\\u043e\\u0432\\u0435\\u0440\\u044c\\u0442\\u0435 \\u043e\\u0442\\u043a\\u0440\\u044b\\u0442\\u044b\\u0435 \\u043f\\u043e\\u0437\\u0438\\u0446\\u0438\\u0438 \\u0438 \\u0440\\u0430\\u0441\\u0441\\u043c\\u043e\\u0442\\u0440\\u0438\\u0442\\u0435 \\u043e\\u0441\\u0442\\u0430\\u043d\\u043e\\u0432\\u043a\\u0443 \\u0431\\u043e\\u0442\\u0430'\n            });\n          }\n        }\n      }\n    }\n  } catch(e) {}\n}\n\n// =============================================\n// d) Error Tracking\n// =============================================\nconst healthErrors = cfg.health_errors;\nconst oneHourAgo = now - 60 * 60 * 1000;\n\n// Clean up old errors (older than 1 hour)\nfor (const wfKey of Object.keys(healthErrors)) {\n  if (Array.isArray(healthErrors[wfKey])) {\n    healthErrors[wfKey] = healthErrors[wfKey].filter(e => e.ts > oneHourAgo);\n    if (healthErrors[wfKey].length === 0) delete healthErrors[wfKey];\n  }\n}\n\n// Check consecutive errors per workflow\nfor (const [wfKey, errors] of Object.entries(healthErrors)) {\n  if (!Array.isArray(errors)) continue;\n  // Count consecutive recent errors (last 3)\n  const recent = errors.slice(-3);\n  if (recent.length >= 3 && recent.every(e => e.failed)) {\n    alerts.push({\n      level: 'WARNING',\n      key: `consec_errors_${wfKey}`,\n      description: `\\u0412\\u043e\\u0440\\u043a\\u0444\\u043b\\u043e\\u0443 ${wfKey}: 3+ \\u043e\\u0448\\u0438\\u0431\\u043a\\u0438 \\u043f\\u043e\\u0434\\u0440\\u044f\\u0434`,\n      cause: `\\u041f\\u043e\\u0441\\u043b\\u0435\\u0434\\u043d\\u044f\\u044f: ${recent[recent.length-1].msg || 'unknown'}`,\n      recommendation: '\\u041f\\u0440\\u043e\\u0432\\u0435\\u0440\\u044c\\u0442\\u0435 \\u043b\\u043e\\u0433\\u0438 \\u0432\\u043e\\u0440\\u043a\\u0444\\u043b\\u043e\\u0443 \\u0438 \\u043f\\u0435\\u0440\\u0435\\u0437\\u0430\\u043f\\u0443\\u0441\\u0442\\u0438\\u0442\\u0435'\n    });\n  }\n  // Check failure rate > 20% per hour\n  const totalInHour = errors.length;\n  const failedInHour = errors.filter(e => e.failed).length;\n  if (totalInHour >= 5 && (failedInHour / totalInHour) > 0.2) {\n    alerts.push({\n      level: 'WARNING',\n      key: `failure_rate_${wfKey}`,\n      description: `\\u0412\\u043e\\u0440\\u043a\\u0444\\u043b\\u043e\\u0443 ${wfKey}: \\u0447\\u0430\\u0441\\u0442\\u043e\\u0442\\u0430 \\u043e\\u0448\\u0438\\u0431\\u043e\\u043a ${Math.round(failedInHour/totalInHour*100)}%`,\n      cause: `${failedInHour} \\u043e\\u0448\\u0438\\u0431\\u043e\\u043a \\u0438\\u0437 ${totalInHour} \\u0437\\u0430\\u043f\\u0443\\u0441\\u043a\\u043e\\u0432 \\u0437\\u0430 \\u0447\\u0430\\u0441`,\n      recommendation: '\\u041f\\u0440\\u043e\\u0432\\u0435\\u0440\\u044c\\u0442\\u0435 \\u043a\\u043e\\u043d\\u0444\\u0438\\u0433\\u0443\\u0440\\u0430\\u0446\\u0438\\u044e \\u0438 API \\u043a\\u043b\\u044e\\u0447\\u0438'\n    });\n  }\n}\n\n// =============================================\n// e) Alert Deduplication\n// =============================================\nconst DEDUP_INTERVAL = 15 * 60 * 1000; // 15 minutes\nconst alertsSent = cfg.health_alerts_sent;\nconst filteredAlerts = [];\n\nfor (const alert of alerts) {\n  const lastSent = alertsSent[alert.key] || 0;\n  if (alert.level === 'INFO' || (now - lastSent) > DEDUP_INTERVAL) {\n    filteredAlerts.push(alert);\n    alertsSent[alert.key] = now;\n  }\n}\n\n// =============================================\n// f) Store health history & auto-cleanup (7 days)\n// =============================================\ncfg.health_history.push({\n  ts: now,\n  apiOk,\n  apiResponseTime,\n  equity: totalEquity,\n  posCount: positions.length,\n  alertCount: filteredAlerts.length\n});\n\nconst sevenDaysAgo = now - 7 * 24 * 60 * 60 * 1000;\ncfg.health_history = cfg.health_history.filter(h => h.ts > sevenDaysAgo);\n\n// Clean old alert dedup timestamps\nfor (const key of Object.keys(alertsSent)) {\n  if (now - alertsSent[key] > sevenDaysAgo) {\n    delete alertsSent[key];\n  }\n}\n\nreturn [{\n  json: {\n    alerts: filteredAlerts,\n    hasAlerts: filteredAlerts.length > 0,\n    apiOk,\n    apiResponseTime,\n    totalEquity,\n    positionsCount: positions.length\n  }\n}];"
+      },
+      "id": "health-checks",
+      "name": "Health Checks",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [540, 400]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ $json.hasAlerts }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "if-alerts",
+      "name": "Check Alert Level",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [780, 400]
+    },
+    {
+      "parameters": {
+        "jsCode": "// =============================================\n// Format alerts based on level\n// =============================================\nconst data = $input.first().json;\nconst alerts = data.alerts || [];\n\nfunction moscowTime() {\n  const d = new Date(Date.now() + 3 * 60 * 60 * 1000);\n  const date = d.toISOString().slice(0, 10).split('-').reverse().join('.');\n  const time = d.toISOString().slice(11, 19);\n  return { date, time };\n}\n\nconst { date, time } = moscowTime();\nconst parts = [];\n\nfor (const alert of alerts) {\n  if (alert.level === 'INFO') {\n    parts.push(alert.message);\n    continue;\n  }\n\n  if (alert.level === 'CRITICAL') {\n    let msg = `\\ud83d\\udea8 <b>\\u041a\\u0420\\u0418\\u0422\\u0418\\u0427\\u0415\\u0421\\u041a\\u0410\\u042f \\u041e\\u0428\\u0418\\u0411\\u041a\\u0410</b>\\n`;\n    msg += `\\u23f0 ${date}, ${time} (MSK)\\n`;\n    msg += `\\ud83d\\udd34 \\u0423\\u0440\\u043e\\u0432\\u0435\\u043d\\u044c: \\u041a\\u0420\\u0418\\u0422\\u0418\\u0427\\u0415\\u0421\\u041a\\u0418\\u0419\\n`;\n    msg += `\\u041f\\u0440\\u043e\\u0431\\u043b\\u0435\\u043c\\u0430: ${alert.description}\\n`;\n    msg += `\\u041e\\u0448\\u0438\\u0431\\u043a\\u0430: ${alert.error_code} ${alert.error_text}\\n`;\n    msg += `\\u0414\\u043b\\u0438\\u0442\\u0435\\u043b\\u044c\\u043d\\u043e\\u0441\\u0442\\u044c: ${alert.duration}\\n`;\n    msg += `\\u26a0\\ufe0f ${alert.consequences}\\n`;\n    msg += `\\u0414\\u0435\\u0439\\u0441\\u0442\\u0432\\u0438\\u0435: ${alert.auto_action}\\n`;\n    msg += `\\u0420\\u0435\\u043a\\u043e\\u043c\\u0435\\u043d\\u0434\\u0430\\u0446\\u0438\\u044f: ${alert.manual_action}`;\n    parts.push(msg);\n  }\n\n  if (alert.level === 'WARNING') {\n    let msg = `\\u26a0\\ufe0f <b>\\u041f\\u0420\\u0415\\u0414\\u0423\\u041f\\u0420\\u0415\\u0416\\u0414\\u0415\\u041d\\u0418\\u0415</b>\\n`;\n    msg += `\\u23f0 ${date}, ${time} (MSK)\\n`;\n    msg += `\\ud83d\\udfe1 \\u0423\\u0440\\u043e\\u0432\\u0435\\u043d\\u044c: \\u041f\\u0420\\u0415\\u0414\\u0423\\u041f\\u0420\\u0415\\u0416\\u0414\\u0415\\u041d\\u0418\\u0415\\n`;\n    msg += `\\u041f\\u0440\\u043e\\u0431\\u043b\\u0435\\u043c\\u0430: ${alert.description}\\n`;\n    msg += `\\u0412\\u043e\\u0437\\u043c\\u043e\\u0436\\u043d\\u0430\\u044f \\u043f\\u0440\\u0438\\u0447\\u0438\\u043d\\u0430: ${alert.cause}\\n`;\n    msg += `\\u0414\\u0435\\u0439\\u0441\\u0442\\u0432\\u0438\\u0435: \\u041c\\u043e\\u043d\\u0438\\u0442\\u043e\\u0440\\u0438\\u043d\\u0433 \\u043f\\u0440\\u043e\\u0434\\u043e\\u043b\\u0436\\u0430\\u0435\\u0442\\u0441\\u044f\\n`;\n    msg += `\\u0420\\u0435\\u043a\\u043e\\u043c\\u0435\\u043d\\u0434\\u0430\\u0446\\u0438\\u044f: ${alert.recommendation}`;\n    parts.push(msg);\n  }\n\n  if (alert.level === 'RECOVERY') {\n    let msg = `\\u2705 <b>\\u0412\\u041e\\u0421\\u0421\\u0422\\u0410\\u041d\\u041e\\u0412\\u041b\\u0415\\u041d\\u0418\\u0415</b>\\n`;\n    msg += `\\u23f0 ${date}, ${time} (MSK)\\n`;\n    msg += `\\ud83d\\udfe2 \\u041f\\u0440\\u043e\\u0431\\u043b\\u0435\\u043c\\u0430 \\u0440\\u0435\\u0448\\u0435\\u043d\\u0430\\n`;\n    msg += `\\u0427\\u0442\\u043e \\u0431\\u044b\\u043b\\u043e: ${alert.description}\\n`;\n    msg += `\\u0414\\u043b\\u0438\\u0442\\u0435\\u043b\\u044c\\u043d\\u043e\\u0441\\u0442\\u044c: ${alert.duration}\\n`;\n    msg += `\\u0421\\u0442\\u0430\\u0442\\u0443\\u0441: \\u0412\\u0441\\u0435 \\u0441\\u0438\\u0441\\u0442\\u0435\\u043c\\u044b \\u0440\\u0430\\u0431\\u043e\\u0442\\u0430\\u044e\\u0442 \\u043d\\u043e\\u0440\\u043c\\u0430\\u043b\\u044c\\u043d\\u043e`;\n    parts.push(msg);\n  }\n}\n\nconst message = parts.join('\\n\\n---\\n\\n');\n\nreturn [{ json: { message } }];"
+      },
+      "id": "format-alerts",
+      "name": "Format Alerts",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1020, 400]
+    },
+    {
+      "parameters": {
+        "operation": "sendMessage",
+        "chatId": "={{ $getWorkflowStaticData('global').TELEGRAM_CHAT_ID }}",
+        "text": "={{ $json.message }}",
+        "additionalFields": {
+          "parse_mode": "HTML"
+        }
+      },
+      "id": "send-alert",
+      "name": "TG: Send Alert",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [1260, 400],
+      "credentials": {
+        "telegramApi": {
+          "id": "TELEGRAM_CREDENTIALS_ID",
+          "name": "Telegram Bot"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Every 2 Minutes": {
+      "main": [
+        [
+          {
+            "node": "Config",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Config": {
+      "main": [
+        [
+          {
+            "node": "Health Checks",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Health Checks": {
+      "main": [
+        [
+          {
+            "node": "Check Alert Level",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Alert Level": {
+      "main": [
+        [
+          {
+            "node": "Format Alerts",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Format Alerts": {
+      "main": [
+        [
+          {
+            "node": "TG: Send Alert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "tags": [
+    {
+      "name": "gerchik-bot"
+    },
+    {
+      "name": "health"
+    }
+  ]
+}
