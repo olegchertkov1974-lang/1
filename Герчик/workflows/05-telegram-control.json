@@ -340,7 +340,7 @@
     {
       "parameters": {
         "operation": "sendMessage",
-        "chatId": "={{ $getWorkflowStaticData('global').TELEGRAM_CHAT_ID }}",
+        "chatId": "={{ $('Telegram Trigger1').item.json.message.chat.id }}",
         "text": "={{ $json.message }}",
         "additionalFields": { "parse_mode": "HTML" }
       },
