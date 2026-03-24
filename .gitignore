@@ -1,8 +1,8 @@
 node_modules/
-server/messenger.db
-server/uploads/*
-!server/uploads/.gitkeep
+server/data/*.db
 client/build/
 .env
 *.log
 .DS_Store
+server/var/strategies/*.js
+!server/var/strategies/example_*.js

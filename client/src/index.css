@@ -4,50 +4,116 @@
   box-sizing: border-box;
 }
 
-:root {
-  --primary: #5b5ea6;
-  --primary-light: #7c7fbf;
-  --primary-dark: #44478a;
-  --bg: #f0f2f5;
-  --bg-dark: #e4e6eb;
-  --sidebar-bg: #ffffff;
-  --chat-bg: #e5ddd5;
-  --message-own: #dcf8c6;
-  --message-other: #ffffff;
-  --text: #1a1a2e;
-  --text-light: #65676b;
-  --border: #e0e0e0;
-  --danger: #e74c3c;
-  --success: #2ecc71;
-  --online: #31a24c;
-}
-
 body {
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, sans-serif;
-  background: var(--bg);
-  color: var(--text);
-  height: 100vh;
-  overflow: hidden;
+  background: #0f0f23;
+  color: #e0e0e0;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Courier New', monospace;
+  font-size: 14px;
+  line-height: 1.5;
 }
 
-#root {
-  height: 100vh;
-}
-
-::-webkit-scrollbar {
-  width: 6px;
-}
-
-::-webkit-scrollbar-thumb {
-  background: #ccc;
-  border-radius: 3px;
-}
-
-input, button, textarea {
-  font-family: inherit;
+:root {
+  --bg-primary: #0f0f23;
+  --bg-secondary: #1a1a2e;
+  --bg-card: #16213e;
+  --bg-hover: #1f2b47;
+  --border: #2a2a4a;
+  --text-primary: #e0e0e0;
+  --text-secondary: #8888aa;
+  --text-muted: #555577;
+  --accent: #4fc3f7;
+  --green: #00e676;
+  --red: #ff5252;
+  --yellow: #ffd740;
+  --orange: #ff9100;
 }
 
 a {
+  color: var(--accent);
   text-decoration: none;
-  color: inherit;
 }
+
+a:hover {
+  text-decoration: underline;
+}
+
+button {
+  cursor: pointer;
+  border: 1px solid var(--border);
+  background: var(--bg-card);
+  color: var(--text-primary);
+  padding: 8px 16px;
+  border-radius: 4px;
+  font-size: 13px;
+  transition: background 0.2s;
+}
+
+button:hover {
+  background: var(--bg-hover);
+}
+
+button.primary {
+  background: var(--accent);
+  color: #000;
+  border-color: var(--accent);
+}
+
+button.primary:hover {
+  background: #29b6f6;
+}
+
+button.danger {
+  border-color: var(--red);
+  color: var(--red);
+}
+
+button.danger:hover {
+  background: rgba(255, 82, 82, 0.15);
+}
+
+button.success {
+  border-color: var(--green);
+  color: var(--green);
+}
+
+button.success:hover {
+  background: rgba(0, 230, 118, 0.15);
+}
+
+input, select, textarea {
+  background: var(--bg-primary);
+  border: 1px solid var(--border);
+  color: var(--text-primary);
+  padding: 8px 12px;
+  border-radius: 4px;
+  font-size: 13px;
+  font-family: inherit;
+}
+
+input:focus, select:focus, textarea:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+th, td {
+  padding: 10px 12px;
+  text-align: left;
+  border-bottom: 1px solid var(--border);
+}
+
+th {
+  color: var(--text-secondary);
+  font-weight: 600;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.positive { color: var(--green); }
+.negative { color: var(--red); }
+.neutral { color: var(--text-secondary); }
