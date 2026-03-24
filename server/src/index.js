@@ -1,118 +1,98 @@
 require('dotenv').config();
 const express = require('express');
 const http = require('http');
-const { Server } = require('socket.io');
 const cors = require('cors');
+const { Server } = require('socket.io');
 const path = require('path');
-const jwt = require('jsonwebtoken');
-const db = require('./database');
 
-const authRoutes = require('./routes/auth');
-const conversationRoutes = require('./routes/conversations');
-const messageRoutes = require('./routes/messages');
-const userRoutes = require('./routes/users');
-const searchRoutes = require('./routes/search');
+const db = require('./database');
+const { ExchangeManager } = require('./modules/exchange/exchange_manager');
+const { BotRunner } = require('./modules/strategy/bot_runner');
+const { NotificationService } = require('./notify/notification_service');
+const { TickerRepository } = require('./repository/ticker_repository');
+const { CandleRepository } = require('./repository/candle_repository');
+const { TradeRepository } = require('./repository/trade_repository');
+
+const dashboardRoutes = require('./routes/dashboard');
+const pairsRoutes = require('./routes/pairs');
+const ordersRoutes = require('./routes/orders');
+const strategiesRoutes = require('./routes/strategies');
 
 const app = express();
 const server = http.createServer(app);
 const io = new Server(server, {
-  cors: { origin: 'http://localhost:3000', methods: ['GET', 'POST'] }
+  cors: { origin: process.env.CLIENT_URL || 'http://localhost:3000', methods: ['GET', 'POST'] }
 });
 
 app.use(cors());
 app.use(express.json());
-app.use('/uploads', express.static(path.join(__dirname, '..', 'uploads')));
 
-app.use('/api/auth', authRoutes);
-app.use('/api/conversations', conversationRoutes);
-app.use('/api/messages', messageRoutes);
-app.use('/api/users', userRoutes);
-app.use('/api/search', searchRoutes);
+// Repositories
+const tickerRepo = new TickerRepository(db);
+const candleRepo = new CandleRepository(db);
+const tradeRepo = new TradeRepository(db);
 
-// Socket.IO
-const onlineUsers = new Map();
-
-io.use((socket, next) => {
-  const token = socket.handshake.auth.token;
-  if (!token) return next(new Error('Authentication required'));
-  try {
-    const decoded = jwt.verify(token, process.env.JWT_SECRET);
-    socket.userId = decoded.userId;
-    next();
-  } catch (err) {
-    next(new Error('Invalid token'));
+// Core services
+const exchangeManager = new ExchangeManager();
+const notificationService = new NotificationService({
+  telegram: {
+    token: process.env.TELEGRAM_BOT_TOKEN,
+    chatId: process.env.TELEGRAM_CHAT_ID
+  },
+  slack: {
+    webhookUrl: process.env.SLACK_WEBHOOK_URL
   }
 });
+const botRunner = new BotRunner(exchangeManager, tickerRepo, candleRepo, tradeRepo, notificationService, io);
 
+// Make services available to routes
+app.locals.exchangeManager = exchangeManager;
+app.locals.botRunner = botRunner;
+app.locals.tickerRepo = tickerRepo;
+app.locals.candleRepo = candleRepo;
+app.locals.tradeRepo = tradeRepo;
+app.locals.notificationService = notificationService;
+app.locals.io = io;
+app.locals.db = db;
+
+// API routes
+app.use('/api/dashboard', dashboardRoutes);
+app.use('/api/pairs', pairsRoutes);
+app.use('/api/orders', ordersRoutes);
+app.use('/api/strategies', strategiesRoutes);
+
+// Health check
+app.get('/api/health', (req, res) => {
+  res.json({ status: 'ok', uptime: process.uptime() });
+});
+
+// Socket.IO for real-time updates
 io.on('connection', (socket) => {
-  const userId = socket.userId;
-  onlineUsers.set(userId, socket.id);
-  db.prepare('UPDATE users SET status = ?, last_seen = CURRENT_TIMESTAMP WHERE id = ?').run('online', userId);
-  io.emit('user:online', { userId, status: 'online' });
+  console.log('Client connected:', socket.id);
 
-  socket.on('message:send', (data) => {
-    const { conversationId, content, type, replyTo, fileUrl, fileName } = data;
-    const { v4: uuidv4 } = require('uuid');
-    const id = uuidv4();
-
-    db.prepare(`
-      INSERT INTO messages (id, conversation_id, sender_id, content, type, file_url, file_name, reply_to)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(id, conversationId, userId, content, type || 'text', fileUrl || null, fileName || null, replyTo || null);
-
-    const message = db.prepare(`
-      SELECT m.*, u.username as sender_name, u.avatar as sender_avatar
-      FROM messages m JOIN users u ON m.sender_id = u.id WHERE m.id = ?
-    `).get(id);
-
-    const members = db.prepare('SELECT user_id FROM conversation_members WHERE conversation_id = ?').all(conversationId);
-    members.forEach(member => {
-      const memberSocketId = onlineUsers.get(member.user_id);
-      if (memberSocketId) {
-        io.to(memberSocketId).emit('message:new', message);
-      }
-    });
+  socket.on('subscribe:ticker', (pair) => {
+    socket.join(`ticker:${pair}`);
   });
 
-  socket.on('message:typing', ({ conversationId }) => {
-    const user = db.prepare('SELECT username FROM users WHERE id = ?').get(userId);
-    const members = db.prepare('SELECT user_id FROM conversation_members WHERE conversation_id = ?').all(conversationId);
-    members.forEach(member => {
-      if (member.user_id !== userId) {
-        const memberSocketId = onlineUsers.get(member.user_id);
-        if (memberSocketId) {
-          io.to(memberSocketId).emit('message:typing', { conversationId, userId, username: user.username });
-        }
-      }
-    });
-  });
-
-  socket.on('message:read', ({ conversationId }) => {
-    const unread = db.prepare(`
-      SELECT id FROM messages WHERE conversation_id = ? AND sender_id != ?
-      AND id NOT IN (SELECT message_id FROM message_reads WHERE user_id = ?)
-    `).all(conversationId, userId, userId);
-
-    const insert = db.prepare('INSERT OR IGNORE INTO message_reads (message_id, user_id) VALUES (?, ?)');
-    unread.forEach(msg => insert.run(msg.id, userId));
-
-    const members = db.prepare('SELECT user_id FROM conversation_members WHERE conversation_id = ?').all(conversationId);
-    members.forEach(member => {
-      const memberSocketId = onlineUsers.get(member.user_id);
-      if (memberSocketId) {
-        io.to(memberSocketId).emit('message:read', { conversationId, userId });
-      }
-    });
+  socket.on('unsubscribe:ticker', (pair) => {
+    socket.leave(`ticker:${pair}`);
   });
 
   socket.on('disconnect', () => {
-    onlineUsers.delete(userId);
-    db.prepare('UPDATE users SET status = ?, last_seen = CURRENT_TIMESTAMP WHERE id = ?').run('offline', userId);
-    io.emit('user:online', { userId, status: 'offline' });
+    console.log('Client disconnected:', socket.id);
   });
 });
 
 const PORT = process.env.PORT || 5000;
+
 server.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
+  console.log(`Crypto Trading Bot server running on port ${PORT}`);
+  console.log(`Dashboard: http://127.0.0.1:${PORT}`);
+
+  // Initialize exchanges from config
+  botRunner.init().catch(err => {
+    console.error('Failed to initialize bot runner:', err.message);
+  });
 });
+
+module.exports = { app, server };
