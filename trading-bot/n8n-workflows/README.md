@@ -1,82 +1,86 @@
-# n8n Workflows for Gerchik Trading Bot
+# n8n Workflows для торгового бота
 
-Import these workflows into your n8n instance.
+## Импорт в n8n
 
-## Workflow 1: Signal Filter (bot → n8n → Telegram)
+1. Открой n8n: https://quiximoloymer.beget.app
+2. Перейди в **Workflows**
+3. Нажми **⋮** → **Import from File**
+4. Загрузи файлы по одному:
+   - `1-signal-filter.json` — основной workflow
+   - `2-daily-report.json` — ежедневный отчёт
+   - `3-news-sentiment.json` — анализ новостей
 
-The bot pushes every signal to n8n via webhook. n8n can add extra
-validation, forward to Telegram with buttons, or override the AI decision.
+## Настройка после импорта
 
-### Setup in n8n:
+### 1. Создай credentials в n8n
 
-1. Create a **Webhook** node:
-   - Method: POST
-   - Path: `/webhook/trading-bot`
-   - Copy the full URL and paste it into your `.env` as `N8N_WEBHOOK_URL`
+**Telegram Bot:**
+- Settings → Credentials → Add Credential → Telegram
+- Вставь токен от @BotFather
 
-2. Add an **IF** node after the webhook:
-   - Condition: `{{ $json.event }}` equals `signal_pending`
+**OpenRouter API:**
+- Settings → Credentials → Add Credential → Header Auth
+- Name: `Authorization`
+- Value: `Bearer ТВОЙ_OPENROUTER_КЛЮЧ`
 
-3. For `signal_pending` events, add an **OpenRouter** (HTTP Request) node:
-   - URL: `https://openrouter.ai/api/v1/chat/completions`
-   - Method: POST
-   - Headers: `Authorization: Bearer YOUR_OPENROUTER_KEY`
-   - Body:
-     ```json
-     {
-       "model": "anthropic/claude-sonnet-4-20250514",
-       "messages": [{"role": "user", "content": "Confirm this trade: {{ $json.data.signal }}"}],
-       "max_tokens": 200
-     }
-     ```
+### 2. Привяжи credentials к нодам
 
-4. Add a **Telegram** node to send the result to your chat.
+Открой каждый workflow и в нодах Telegram / OpenRouter выбери созданные credentials.
 
-## Workflow 2: Daily Report
+### 3. Задай переменные окружения в n8n
 
-1. **Schedule Trigger**: every day at 20:00
-2. **HTTP Request** node:
-   - GET `http://127.0.0.1:3001/status`
-   - Header: `x-webhook-secret: YOUR_WEBHOOK_SECRET`
-3. **HTTP Request** node:
-   - GET `http://127.0.0.1:3001/positions`
-   - Header: `x-webhook-secret: YOUR_WEBHOOK_SECRET`
-4. **Telegram** node: format and send the summary
+Settings → Variables:
+- `TELEGRAM_CHAT_ID` — твой chat ID
+- `WEBHOOK_SECRET` — тот же что в .env бота
 
-## Workflow 3: News Sentiment
+### 4. Скопируй URL вебхука
 
-1. **Schedule Trigger**: every 30 minutes
-2. **RSS Feed Read** node: add crypto news RSS feeds
-3. **HTTP Request** to OpenRouter: analyze headlines for sentiment
-4. **IF** sentiment is strongly negative:
-   - **HTTP Request** POST to `http://127.0.0.1:3001/command`
-   - Body: `{"command": "pause"}`
-   - This pauses the bot during negative sentiment
+В workflow **"Signal Filter"** открой ноду **Webhook** → скопируй **Production URL**.
+Вставь его в `.env` бота как `N8N_WEBHOOK_URL`.
 
-## Webhook API Reference
+### 5. Активируй workflows
 
-All endpoints require `x-webhook-secret` header if `WEBHOOK_SECRET` is set.
+Включи тумблер **Active** на каждом workflow.
 
-| Method | Endpoint       | Description                          |
-|--------|----------------|--------------------------------------|
-| GET    | /status        | Bot status, balance, uptime          |
-| GET    | /positions     | Open positions                       |
-| GET    | /levels?pair=BTC/USDT&timeframe=1h | Current levels     |
-| POST   | /command       | Send command: pause/resume/close_all/force_scan |
-| POST   | /ai-override   | Override AI decision for pending signal |
+## Что делает каждый workflow
 
-### Events pushed to n8n (N8N_WEBHOOK_URL):
+### 1-signal-filter (основной)
+```
+Бот находит сигнал → отправляет в n8n webhook
+  → n8n отправляет в OpenRouter для AI-анализа
+  → результат в Telegram с полным разбором
+  → при открытии/закрытии сделки — уведомление
+  → при ошибке — алерт
+```
 
-| Event            | When                                    |
-|------------------|-----------------------------------------|
-| bot_started      | Bot starts                              |
-| bot_stopped      | Bot stops                               |
-| tick_complete    | After each scan cycle                   |
-| signal_pending   | New signal found (before execution)     |
-| signal_skipped   | Signal skipped (regime/volume filter)   |
-| trade_opened     | Position opened                         |
-| trade_closed     | Position closed (with PnL)              |
-| trade_analysis   | AI post-trade analysis complete         |
-| order_rejected   | Risk manager rejected order             |
-| order_error      | Exchange error placing order            |
-| error            | General error                           |
+### 2-daily-report
+```
+Каждый день в 20:00
+  → запрашивает статус бота (баланс, аптайм)
+  → запрашивает статистику сделок (win rate, PnL)
+  → отправляет сводку в Telegram
+```
+
+### 3-news-sentiment
+```
+Каждые 30 минут
+  → парсит RSS крипто-новости
+  → отправляет заголовки в OpenRouter
+  → AI оценивает sentiment
+  → если сильно негативный → ставит бота на паузу + алерт в Telegram
+```
+
+## API бота (для кастомных workflow)
+
+Адрес: `http://127.0.0.1:3001`
+Заголовок: `x-webhook-secret: ВАШ_СЕКРЕТ`
+
+| Метод | Эндпоинт | Описание |
+|-------|----------|----------|
+| GET | /status | Статус, баланс, аптайм |
+| GET | /positions | Открытые позиции |
+| GET | /levels?pair=BTC/USDT&timeframe=1h | Текущие уровни |
+| GET | /stats | Статистика сделок |
+| GET | /trades?limit=20 | Последние сделки |
+| POST | /command | `{"command": "pause\|resume\|stop\|close_all\|force_scan\|daily_report"}` |
+| POST | /ai-override | `{"posKey": "...", "approved": true, "reason": "..."}` |
