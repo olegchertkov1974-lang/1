@@ -1,0 +1,137 @@
+'use strict';
+
+/**
+ * Trade Store — SQLite database for trade history and AI analysis.
+ * Keeps a record of every trade for post-analysis and n8n reporting.
+ */
+
+const path = require('path');
+const logger = require('./logger');
+
+let Database;
+try {
+  Database = require('better-sqlite3');
+} catch (_) {
+  Database = null;
+}
+
+const DB_PATH = path.resolve(__dirname, '..', 'data', 'trades.db');
+
+class TradeStore {
+  constructor() {
+    if (!Database) {
+      logger.warn('TradeStore: better-sqlite3 not installed, using in-memory fallback');
+      this.db = null;
+      this.trades = [];
+      return;
+    }
+
+    const fs = require('fs');
+    const dir = path.dirname(DB_PATH);
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+
+    this.db = new Database(DB_PATH);
+    this.db.pragma('journal_mode = WAL');
+
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS trades (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        pair TEXT NOT NULL,
+        timeframe TEXT,
+        side TEXT NOT NULL,
+        entry REAL NOT NULL,
+        exit_price REAL,
+        stop_loss REAL,
+        take_profit REAL,
+        size REAL,
+        pnl REAL,
+        entry_reason TEXT,
+        exit_reason TEXT,
+        duration TEXT,
+        opened_at TEXT,
+        closed_at TEXT NOT NULL DEFAULT (datetime('now')),
+        ai_grade TEXT,
+        ai_lessons TEXT,
+        ai_improvement TEXT
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_trades_pair ON trades(pair);
+      CREATE INDEX IF NOT EXISTS idx_trades_closed ON trades(closed_at);
+    `);
+
+    logger.info(`TradeStore: database at ${DB_PATH}`);
+  }
+
+  saveTrade(trade) {
+    if (!this.db) {
+      this.trades.push(trade);
+      return;
+    }
+
+    try {
+      const stmt = this.db.prepare(`
+        INSERT INTO trades (pair, timeframe, side, entry, exit_price, stop_loss,
+          take_profit, size, pnl, entry_reason, exit_reason, duration, opened_at, closed_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `);
+      stmt.run(
+        trade.pair, trade.timeframe, trade.side, trade.entry,
+        trade.exitPrice, trade.stopLoss, trade.takeProfit, trade.size,
+        trade.pnl, trade.entryReason, trade.exitReason, trade.duration,
+        trade.openedAt || null, trade.closedAt
+      );
+    } catch (err) {
+      logger.error(`TradeStore save error: ${err.message}`);
+    }
+  }
+
+  saveAnalysis(closedAt, analysis) {
+    if (!this.db) return;
+
+    try {
+      const stmt = this.db.prepare(`
+        UPDATE trades SET ai_grade = ?, ai_lessons = ?, ai_improvement = ?
+        WHERE closed_at = ?
+      `);
+      stmt.run(
+        analysis.grade,
+        JSON.stringify(analysis.lessons || []),
+        analysis.improvement || '',
+        closedAt
+      );
+    } catch (err) {
+      logger.error(`TradeStore analysis save error: ${err.message}`);
+    }
+  }
+
+  getRecentTrades(limit = 20) {
+    if (!this.db) return this.trades.slice(-limit);
+    return this.db.prepare('SELECT * FROM trades ORDER BY id DESC LIMIT ?').all(limit);
+  }
+
+  getStats() {
+    if (!this.db) {
+      const wins = this.trades.filter((t) => t.pnl > 0).length;
+      const losses = this.trades.filter((t) => t.pnl <= 0).length;
+      const totalPnl = this.trades.reduce((s, t) => s + (t.pnl || 0), 0);
+      return { total: this.trades.length, wins, losses, totalPnl };
+    }
+
+    const row = this.db.prepare(`
+      SELECT
+        COUNT(*) as total,
+        SUM(CASE WHEN pnl > 0 THEN 1 ELSE 0 END) as wins,
+        SUM(CASE WHEN pnl <= 0 THEN 1 ELSE 0 END) as losses,
+        COALESCE(SUM(pnl), 0) as total_pnl,
+        COALESCE(AVG(pnl), 0) as avg_pnl
+      FROM trades
+    `).get();
+    return row;
+  }
+
+  close() {
+    if (this.db) this.db.close();
+  }
+}
+
+module.exports = TradeStore;

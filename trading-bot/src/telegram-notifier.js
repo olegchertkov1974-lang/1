@@ -3,8 +3,8 @@
 /**
  * Telegram Notifier
  *
- * Sends trade notifications and error alerts via Telegram Bot API.
- * Requires TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID in .env.
+ * Sends trade notifications, error alerts, and daily summaries
+ * via Telegram Bot API.
  */
 
 const https = require('https');
@@ -28,6 +28,7 @@ class TelegramNotifier {
       chat_id: this.chatId,
       text,
       parse_mode: 'HTML',
+      disable_web_page_preview: true,
     });
 
     return new Promise((resolve, reject) => {
@@ -81,7 +82,7 @@ class TelegramNotifier {
       `SL: <code>${signal.stopLoss}</code>\n` +
       `TP: <code>${signal.takeProfit}</code>\n` +
       `Size: <code>${signal.positionSize}</code>\n` +
-      `Risk: <code>${signal.riskPct}%</code>\n` +
+      `Risk: <code>${signal.riskPct}% ($${signal.riskAmount || '?'})</code>\n` +
       `R:R: <code>1:${signal.riskRewardRatio}</code>\n` +
       `Reason: ${signal.reason || ''}`;
 
@@ -93,10 +94,12 @@ class TelegramNotifier {
   }
 
   async notifyClose(info) {
+    const pnlIcon = info.pnl > 0 ? '✅' : info.pnl < 0 ? '❌' : '⬜';
     const msg =
-      `⬜ <b>CLOSE</b>\n` +
+      `${pnlIcon} <b>CLOSE</b>\n` +
       `Pair: <code>${info.pair || 'N/A'}</code>\n` +
       `Price: <code>${info.price}</code>\n` +
+      `PnL: <code>${info.pnl !== undefined ? info.pnl + ' USDT' : '?'}</code>\n` +
       `Reason: ${info.reason || ''}`;
 
     try {
@@ -112,6 +115,22 @@ class TelegramNotifier {
       await this.sendMessage(msg);
     } catch (e) {
       // don't recurse
+    }
+  }
+
+  async notifyDailySummary(stats) {
+    const winRate = stats.total > 0 ? ((stats.wins / stats.total) * 100).toFixed(1) : '0';
+    const msg =
+      `📈 <b>Daily Summary</b>\n` +
+      `Trades: ${stats.total}\n` +
+      `Wins: ${stats.wins} | Losses: ${stats.losses}\n` +
+      `Win rate: ${winRate}%\n` +
+      `Total PnL: <code>${stats.total_pnl || stats.totalPnl || 0} USDT</code>`;
+
+    try {
+      await this.sendMessage(msg);
+    } catch (e) {
+      logger.error(`Failed to send daily summary: ${e.message}`);
     }
   }
 }
