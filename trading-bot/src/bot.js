@@ -64,13 +64,17 @@ class TradingBot {
     process.on('SIGINT', shutdown);
     process.on('SIGTERM', shutdown);
 
-    await this.notifier.sendMessage(
-      '🤖 <b>Bot started</b>\n' +
-      `Pairs: ${PAIRS.join(', ')}\n` +
-      `TF: ${TIMEFRAMES.join(', ')}\n` +
-      `AI: ${AI_FILTER_ENABLED && this.aiFilter.enabled ? 'ON' : 'OFF'}\n` +
-      `Risk: ${this.riskManager.riskPct}%`
-    );
+    try {
+      await this.notifier.sendMessage(
+        '🤖 <b>Bot started</b>\n' +
+        `Pairs: ${PAIRS.join(', ')}\n` +
+        `TF: ${TIMEFRAMES.join(', ')}\n` +
+        `AI: ${AI_FILTER_ENABLED && this.aiFilter.enabled ? 'ON' : 'OFF'}\n` +
+        `Risk: ${this.riskManager.riskPct}%`
+      );
+    } catch (e) {
+      logger.warn(`Startup Telegram notification failed: ${e.message}`);
+    }
 
     // Notify n8n
     await this.webhook.pushToN8n('bot_started', {
