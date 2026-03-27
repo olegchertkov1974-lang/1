@@ -2,7 +2,7 @@
 
 ## Импорт в n8n
 
-1. Открой n8n: https://quiximoloymer.beget.app
+1. Открой n8n: https://your-n8n-domain.com
 2. Перейди в **Workflows**
 3. Нажми **⋮** → **Import from File**
 4. Загрузи файлы по одному:
