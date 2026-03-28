@@ -138,7 +138,8 @@ class TradingBot {
         }
 
         const side = pos.side === 'long' ? 'long' : 'short';
-        const size = pos.contracts || parseFloat(pos.info?.size || '0');
+        // Use absolute value — shorts have negative contracts
+        const size = Math.abs(pos.contracts || parseFloat(pos.info?.size || '0'));
         const posKey = `${pair}:synced`;
 
         const position = {

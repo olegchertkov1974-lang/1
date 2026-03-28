@@ -163,11 +163,23 @@ class BybitExchange {
    */
   async fetchOpenPositions(pair) {
     return this._retry(async () => {
-      const symbols = pair ? [this._toLinear(pair)] : ALLOWED_PAIRS.map((p) => this._toLinear(p));
-      const positions = await this.exchange.fetchPositions(symbols);
-      const open = positions.filter((p) => p.contracts > 0 || parseFloat(p.info?.size || '0') > 0);
-      if (positions.length > 0) {
-        logger.info(`fetchOpenPositions: ${positions.length} raw, ${open.length} open`);
+      const pairs = pair ? [pair] : ALLOWED_PAIRS;
+      let allPositions = [];
+
+      // Bybit requires fetching positions one pair at a time
+      for (const p of pairs) {
+        try {
+          const positions = await this.exchange.fetchPositions([this._toLinear(p)]);
+          allPositions = allPositions.concat(positions);
+        } catch (err) {
+          logger.warn(`fetchOpenPositions(${p}): ${err.message}`);
+        }
+      }
+
+      // Filter: use Math.abs to catch both longs (positive) and shorts (negative)
+      const open = allPositions.filter((p) => Math.abs(p.contracts) > 0);
+      if (open.length > 0) {
+        logger.info(`fetchOpenPositions: ${allPositions.length} raw, ${open.length} open`);
       }
       return open;
     }, 'fetchOpenPositions');
