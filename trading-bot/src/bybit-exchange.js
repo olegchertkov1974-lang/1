@@ -11,6 +11,7 @@
 const ccxt = require('ccxt');
 const logger = require('./logger');
 
+// User-facing pair names (without settlement suffix)
 const ALLOWED_PAIRS = ['BTC/USDT', 'ETH/USDT', 'SOL/USDT', 'BNB/USDT', 'XRP/USDT'];
 const ALLOWED_TIMEFRAMES = ['15m', '1h', '4h'];
 const MAX_RETRIES = 3;
@@ -62,6 +63,13 @@ class BybitExchange {
   }
 
   /**
+   * Convert pair to linear perpetual symbol (e.g. BTC/USDT -> BTC/USDT:USDT).
+   */
+  _toLinear(pair) {
+    return pair.includes(':') ? pair : `${pair}:USDT`;
+  }
+
+  /**
    * Validate timeframe.
    */
   validateTimeframe(tf) {
@@ -78,7 +86,7 @@ class BybitExchange {
     this.validateTimeframe(timeframe);
 
     return this._retry(async () => {
-      const ohlcv = await this.exchange.fetchOHLCV(pair, timeframe, undefined, limit);
+      const ohlcv = await this.exchange.fetchOHLCV(this._toLinear(pair), timeframe, undefined, limit);
       return ohlcv.map((c) => ({
         time: c[0],
         open: c[1],
@@ -117,7 +125,7 @@ class BybitExchange {
       if (takeProfit) params.takeProfit = { triggerPrice: takeProfit, type: 'market' };
 
       logger.info(`Placing ${side} order: ${pair} size=${amount} SL=${stopLoss} TP=${takeProfit}`);
-      const order = await this.exchange.createOrder(pair, 'market', side, amount, undefined, params);
+      const order = await this.exchange.createOrder(this._toLinear(pair), 'market', side, amount, undefined, params);
       logger.info(`Order placed: ${order.id}`);
       return order;
     }, `placeOrder(${pair}, ${side})`);
@@ -132,7 +140,7 @@ class BybitExchange {
 
     return this._retry(async () => {
       logger.info(`Closing ${side} position: ${pair} size=${amount}`);
-      const order = await this.exchange.createOrder(pair, 'market', closeSide, amount, undefined, {
+      const order = await this.exchange.createOrder(this._toLinear(pair), 'market', closeSide, amount, undefined, {
         reduceOnly: true,
       });
       logger.info(`Position closed: ${order.id}`);
@@ -146,7 +154,7 @@ class BybitExchange {
   async fetchTicker(pair) {
     this.validatePair(pair);
     return this._retry(async () => {
-      return this.exchange.fetchTicker(pair);
+      return this.exchange.fetchTicker(this._toLinear(pair));
     }, `fetchTicker(${pair})`);
   }
 
@@ -155,7 +163,8 @@ class BybitExchange {
    */
   async fetchOpenPositions(pair) {
     return this._retry(async () => {
-      const positions = await this.exchange.fetchPositions(pair ? [pair] : ALLOWED_PAIRS);
+      const symbols = pair ? [this._toLinear(pair)] : ALLOWED_PAIRS.map((p) => this._toLinear(p));
+      const positions = await this.exchange.fetchPositions(symbols);
       return positions.filter((p) => p.contracts > 0);
     }, 'fetchOpenPositions');
   }
