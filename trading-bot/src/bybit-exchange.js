@@ -28,10 +28,7 @@ class BybitExchange {
       );
     }
 
-    const isDemo = process.env.BYBIT_DEMO === 'true';
-    const isTestnet = process.env.BYBIT_TESTNET === 'true';
-
-    const exchangeConfig = {
+    this.exchange = new ccxt.bybit({
       apiKey,
       secret: apiSecret,
       enableRateLimit: true,
@@ -40,18 +37,13 @@ class BybitExchange {
         adjustForTimeDifference: true,
       },
       timeout: 30000,
-    };
+    });
 
-    // Bybit Demo Trading uses api-demo.bybit.com (different from testnet!)
-    if (isDemo) {
-      exchangeConfig.hostname = 'api-demo.bybit.com';
-    }
-
-    this.exchange = new ccxt.bybit(exchangeConfig);
-
-    if (isDemo) {
+    // Bybit Demo Trading has built-in URL set in ccxt: urls.demotrading
+    if (process.env.BYBIT_DEMO === 'true') {
+      this.exchange.urls['api'] = this.exchange.urls['demotrading'];
       logger.info('Bybit: running in DEMO TRADING mode (api-demo.bybit.com)');
-    } else if (isTestnet) {
+    } else if (process.env.BYBIT_TESTNET === 'true') {
       this.exchange.setSandboxMode(true);
       logger.info('Bybit: running in TESTNET mode');
     }
