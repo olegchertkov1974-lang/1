@@ -42,10 +42,17 @@ class BybitExchange {
     // Use testnet or demo trading if configured
     if (process.env.BYBIT_DEMO === 'true') {
       // Bybit Demo Trading uses a separate API endpoint (not testnet!)
-      this.exchange.urls['api'] = {
-        public: 'https://api-demo.bybit.com',
-        private: 'https://api-demo.bybit.com',
+      // Replace all api.bybit.com URLs with api-demo.bybit.com recursively
+      const replaceUrls = (obj) => {
+        for (const key of Object.keys(obj)) {
+          if (typeof obj[key] === 'string') {
+            obj[key] = obj[key].replace(/api\.bybit\.com/g, 'api-demo.bybit.com');
+          } else if (typeof obj[key] === 'object' && obj[key] !== null) {
+            replaceUrls(obj[key]);
+          }
+        }
       };
+      replaceUrls(this.exchange.urls);
       logger.info('Bybit: running in DEMO TRADING mode (api-demo.bybit.com)');
     } else if (process.env.BYBIT_TESTNET === 'true') {
       this.exchange.setSandboxMode(true);
