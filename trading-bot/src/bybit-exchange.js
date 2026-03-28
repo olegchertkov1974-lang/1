@@ -165,7 +165,11 @@ class BybitExchange {
     return this._retry(async () => {
       const symbols = pair ? [this._toLinear(pair)] : ALLOWED_PAIRS.map((p) => this._toLinear(p));
       const positions = await this.exchange.fetchPositions(symbols);
-      return positions.filter((p) => p.contracts > 0);
+      const open = positions.filter((p) => p.contracts > 0 || parseFloat(p.info?.size || '0') > 0);
+      if (positions.length > 0) {
+        logger.info(`fetchOpenPositions: ${positions.length} raw, ${open.length} open`);
+      }
+      return open;
     }, 'fetchOpenPositions');
   }
 

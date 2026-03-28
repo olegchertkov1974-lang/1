@@ -113,26 +113,41 @@ class TradingBot {
   async _syncPositionsFromExchange() {
     try {
       const openPositions = await this.exchange.fetchOpenPositions();
+      logger.info(`Sync: found ${openPositions.length} open positions on exchange`);
+
       if (openPositions.length === 0) {
-        logger.info('No open positions on exchange');
         return;
       }
 
       for (const pos of openPositions) {
+        // Log raw position data for debugging
+        logger.info(`Sync raw: symbol=${pos.symbol} side=${pos.side} contracts=${pos.contracts} entryPrice=${pos.entryPrice}`);
+
         // pos.symbol is like 'BTC/USDT:USDT', extract base pair
-        const pair = pos.symbol ? pos.symbol.replace(':USDT', '') : pos.info?.symbol;
-        if (!pair || !PAIRS.includes(pair)) continue;
+        let pair = pos.symbol ? pos.symbol.replace(':USDT', '') : null;
+        // Fallback: try info.symbol (e.g. 'BTCUSDT' -> 'BTC/USDT')
+        if (!pair && pos.info?.symbol) {
+          const raw = pos.info.symbol;
+          const base = raw.replace('USDT', '');
+          pair = `${base}/USDT`;
+        }
+
+        if (!pair || !PAIRS.includes(pair)) {
+          logger.warn(`Sync: skipping unrecognized pair ${pair || pos.symbol}`);
+          continue;
+        }
 
         const side = pos.side === 'long' ? 'long' : 'short';
+        const size = pos.contracts || parseFloat(pos.info?.size || '0');
         const posKey = `${pair}:synced`;
 
         const position = {
           id: posKey,
           side,
-          entry: pos.entryPrice || pos.info?.avgPrice || 0,
-          stopLoss: pos.stopLossPrice || 0,
-          takeProfit: pos.takeProfitPrice || 0,
-          size: pos.contracts || 0,
+          entry: pos.entryPrice || parseFloat(pos.info?.avgPrice || '0'),
+          stopLoss: pos.stopLossPrice || parseFloat(pos.info?.stopLoss || '0'),
+          takeProfit: pos.takeProfitPrice || parseFloat(pos.info?.takeProfit || '0'),
+          size,
           orderId: 'synced',
           entryReason: 'Synced from exchange after restart',
           openedAt: pos.timestamp ? new Date(pos.timestamp).toISOString() : new Date().toISOString(),
@@ -140,7 +155,7 @@ class TradingBot {
 
         this.positions.set(posKey, position);
         this.riskManager.addPosition(position);
-        logger.info(`Synced position: ${side} ${pair} size=${position.size} entry=${position.entry}`);
+        logger.info(`Synced position: ${side} ${pair} size=${size} entry=${position.entry}`);
       }
 
       logger.info(`Synced ${this.positions.size} positions from exchange`);
