@@ -13,7 +13,7 @@ const logger = require('./logger');
 class AIFilter {
   constructor() {
     this.apiKey = process.env.OPENROUTER_API_KEY;
-    this.model = process.env.OPENROUTER_MODEL || 'anthropic/claude-sonnet-4-20250514';
+    this.model = process.env.OPENROUTER_MODEL || 'anthropic/claude-3.5-sonnet';
     this.enabled = !!this.apiKey;
 
     if (!this.enabled) {
