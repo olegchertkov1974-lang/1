@@ -42,24 +42,26 @@ class AIFilter {
       touches: l.touches,
     }));
 
-    const prompt = `You are a crypto trading analyst. Evaluate this signal and respond ONLY with valid JSON: {"approved": true/false, "confidence": 0-100, "reason": "brief explanation"}
+    const prompt = `Ты криптотрейдинг-аналитик. Оцени сигнал и ответь ТОЛЬКО валидным JSON: {"approved": true/false, "confidence": 0-100, "reason": "краткое объяснение на русском языке"}
 
-Signal: ${signal.signal.toUpperCase()} ${signal.type} on ${signal.pair || 'unknown'}
-Entry: ${signal.entry}, SL: ${signal.stopLoss}, TP: ${signal.takeProfit}
+Сигнал: ${signal.signal.toUpperCase()} ${signal.type} на ${signal.pair || 'unknown'}
+Вход: ${signal.entry}, SL: ${signal.stopLoss}, TP: ${signal.takeProfit}
 R:R: 1:${signal.riskRewardRatio}
-Reason: ${signal.reason}
+Причина: ${signal.reason}
 
-Last 10 candles (OHLCV):
+Последние 10 свечей (OHLCV):
 ${JSON.stringify(last10)}
 
-Key levels:
+Ключевые уровни:
 ${JSON.stringify(topLevels)}
 
-Evaluate:
-1. Is the level strong enough (touches, recency)?
-2. Does price action confirm the signal (candle patterns, momentum)?
-3. Is R:R favorable given current volatility?
-4. Any red flags (divergence, overextension, low volume)?`;
+Оцени:
+1. Достаточно ли силён уровень (касания, свежесть)?
+2. Подтверждает ли прайс экшен сигнал (паттерны свечей, импульс)?
+3. Выгодно ли R:R при текущей волатильности?
+4. Есть ли красные флаги (дивергенция, перекупленность, низкий объём)?
+
+ВАЖНО: поле "reason" должно быть на русском языке.`;
 
     try {
       const response = await this._request(prompt);
@@ -86,10 +88,12 @@ Evaluate:
       v: Math.round(c.volume),
     }));
 
-    const prompt = `Analyze the market regime for ${pair}. Respond ONLY with valid JSON: {"regime": "trending_up"|"trending_down"|"ranging"|"volatile", "strength": 0-100, "suggestion": "brief advice for level-based strategy"}
+    const prompt = `Определи рыночный режим для ${pair}. Ответь ТОЛЬКО валидным JSON: {"regime": "trending_up"|"trending_down"|"ranging"|"volatile", "strength": 0-100, "suggestion": "краткий совет для стратегии по уровням на русском языке"}
 
-Last 20 candles (OHLCV):
-${JSON.stringify(last20)}`;
+Последние 20 свечей (OHLCV):
+${JSON.stringify(last20)}
+
+ВАЖНО: поле "suggestion" должно быть на русском языке.`;
 
     try {
       const response = await this._request(prompt);
@@ -106,17 +110,19 @@ ${JSON.stringify(last20)}`;
   async analyzeTrade(trade) {
     if (!this.enabled) return null;
 
-    const prompt = `Analyze this completed crypto trade. Respond ONLY with valid JSON: {"grade": "A/B/C/D/F", "lessons": ["lesson1", "lesson2"], "improvement": "one key improvement for next time"}
+    const prompt = `Проанализируй завершённую криптосделку. Ответь ТОЛЬКО валидным JSON: {"grade": "A/B/C/D/F", "lessons": ["урок1", "урок2"], "improvement": "один ключевой совет на будущее"}
 
-Trade:
-- Pair: ${trade.pair}
-- Side: ${trade.side}
-- Entry: ${trade.entry}, Exit: ${trade.exitPrice}
+Сделка:
+- Пара: ${trade.pair}
+- Направление: ${trade.side}
+- Вход: ${trade.entry}, Выход: ${trade.exitPrice}
 - SL: ${trade.stopLoss}, TP: ${trade.takeProfit}
-- Result: ${trade.pnl > 0 ? 'PROFIT' : 'LOSS'} ${trade.pnl}
-- Reason for entry: ${trade.entryReason}
-- Reason for exit: ${trade.exitReason}
-- Duration: ${trade.duration}`;
+- Результат: ${trade.pnl > 0 ? 'ПРИБЫЛЬ' : 'УБЫТОК'} ${trade.pnl} USDT
+- Причина входа: ${trade.entryReason}
+- Причина выхода: ${trade.exitReason}
+- Длительность: ${trade.duration}
+
+ВАЖНО: все поля должны быть на русском языке.`;
 
     try {
       const response = await this._request(prompt);

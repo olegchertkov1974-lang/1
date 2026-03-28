@@ -73,11 +73,11 @@ class TradingBot {
 
     try {
       await this.notifier.sendMessage(
-        '🤖 <b>Bot started</b>\n' +
-        `Pairs: ${PAIRS.join(', ')}\n` +
-        `TF: ${TIMEFRAMES.join(', ')}\n` +
-        `AI: ${AI_FILTER_ENABLED && this.aiFilter.enabled ? 'ON' : 'OFF'}\n` +
-        `Risk: ${this.riskManager.riskPct}%`
+        '🤖 <b>Бот запущен</b>\n' +
+        `Пары: ${PAIRS.join(', ')}\n` +
+        `ТФ: ${TIMEFRAMES.join(', ')}\n` +
+        `AI: ${AI_FILTER_ENABLED && this.aiFilter.enabled ? 'ВКЛ' : 'ВЫКЛ'}\n` +
+        `Риск: ${this.riskManager.riskPct}%`
       );
     } catch (e) {
       logger.warn(`Startup Telegram notification failed: ${e.message}`);
@@ -178,7 +178,7 @@ class TradingBot {
     this.notifier.stopPolling();
     this.webhook.stop();
     this.tradeStore.close();
-    this.notifier.sendMessage('🛑 <b>Bot stopped</b>').catch(() => {});
+    this.notifier.sendMessage('🛑 <b>Бот остановлен</b>').catch(() => {});
     this.webhook.pushToN8n('bot_stopped', {}).catch(() => {});
   }
 
@@ -281,10 +281,10 @@ class TradingBot {
         if (analysis) {
           this.tradeStore.saveAnalysis(trade.closedAt, analysis);
           const analysisMsg =
-            `📊 <b>Post-trade analysis</b> ${pair}\n` +
-            `Grade: ${analysis.grade}\n` +
-            `Lessons: ${(analysis.lessons || []).join(', ')}\n` +
-            `Improvement: ${analysis.improvement || ''}`;
+            `📊 <b>Анализ сделки</b> ${pair}\n` +
+            `Оценка: ${analysis.grade}\n` +
+            `Уроки: ${(analysis.lessons || []).join(', ')}\n` +
+            `Совет: ${analysis.improvement || ''}`;
           await this.notifier.sendMessage(analysisMsg);
           await this.webhook.pushToN8n('trade_analysis', { trade, analysis });
         }
@@ -339,9 +339,9 @@ class TradingBot {
       if (!aiResult.approved || aiResult.confidence < AI_MIN_CONFIDENCE) {
         logger.info(`${pair} ${timeframe}: AI rejected signal (${aiResult.confidence}%) — ${aiResult.reason}`);
         await this.notifier.sendMessage(
-          `🤖 <b>AI REJECTED</b> ${entrySignal.signal.toUpperCase()} ${pair}\n` +
-          `Confidence: ${aiResult.confidence}%\n` +
-          `Reason: ${aiResult.reason}`
+          `🤖 <b>AI ОТКЛОНИЛ</b> ${entrySignal.signal.toUpperCase()} ${pair}\n` +
+          `Уверенность: ${aiResult.confidence}%\n` +
+          `Причина: ${aiResult.reason}`
         );
         return;
       }

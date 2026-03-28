@@ -433,16 +433,17 @@ class TelegramNotifier {
 
   async notifyTrade(signal) {
     const icon = signal.signal === 'long' ? '🟢' : signal.signal === 'short' ? '🔴' : '⚪';
+    const sideRu = signal.signal === 'long' ? 'ЛОНГ' : 'ШОРТ';
     const msg =
-      `${icon} <b>${signal.signal.toUpperCase()}</b> ${signal.type || ''}\n` +
-      `Pair: <code>${signal.pair || 'N/A'}</code>\n` +
-      `Entry: <code>${signal.entry}</code>\n` +
+      `${icon} <b>${sideRu}</b> ${signal.type || ''}\n` +
+      `Пара: <code>${signal.pair || 'N/A'}</code>\n` +
+      `Вход: <code>${signal.entry}</code>\n` +
       `SL: <code>${signal.stopLoss}</code>\n` +
       `TP: <code>${signal.takeProfit}</code>\n` +
-      `Size: <code>${signal.positionSize}</code>\n` +
-      `Risk: <code>${signal.riskPct}% ($${signal.riskAmount || '?'})</code>\n` +
+      `Размер: <code>${signal.positionSize}</code>\n` +
+      `Риск: <code>${signal.riskPct}% ($${signal.riskAmount || '?'})</code>\n` +
       `R:R: <code>1:${signal.riskRewardRatio}</code>\n` +
-      `Reason: ${signal.reason || ''}`;
+      `Причина: ${signal.reason || ''}`;
 
     const keyboard = {
       inline_keyboard: [
@@ -460,11 +461,11 @@ class TelegramNotifier {
   async notifyClose(info) {
     const pnlIcon = info.pnl > 0 ? '✅' : info.pnl < 0 ? '❌' : '⬜';
     const msg =
-      `${pnlIcon} <b>CLOSE</b>\n` +
-      `Pair: <code>${info.pair || 'N/A'}</code>\n` +
-      `Price: <code>${info.price}</code>\n` +
+      `${pnlIcon} <b>ЗАКРЫТИЕ</b>\n` +
+      `Пара: <code>${info.pair || 'N/A'}</code>\n` +
+      `Цена: <code>${info.price}</code>\n` +
       `PnL: <code>${info.pnl !== undefined ? info.pnl + ' USDT' : '?'}</code>\n` +
-      `Reason: ${info.reason || ''}`;
+      `Причина: ${info.reason || ''}`;
 
     try {
       await this.sendMessage(msg);
@@ -474,7 +475,7 @@ class TelegramNotifier {
   }
 
   async notifyError(error) {
-    const msg = `⚠️ <b>ERROR</b>\n<code>${String(error).slice(0, 500)}</code>`;
+    const msg = `⚠️ <b>ОШИБКА</b>\n<code>${String(error).slice(0, 500)}</code>`;
     try {
       await this.sendMessage(msg);
     } catch (e) {
@@ -485,11 +486,11 @@ class TelegramNotifier {
   async notifyDailySummary(stats) {
     const winRate = stats.total > 0 ? ((stats.wins / stats.total) * 100).toFixed(1) : '0';
     const msg =
-      `📈 <b>Daily Summary</b>\n` +
-      `Trades: ${stats.total}\n` +
-      `Wins: ${stats.wins} | Losses: ${stats.losses}\n` +
-      `Win rate: ${winRate}%\n` +
-      `Total PnL: <code>${stats.total_pnl || stats.totalPnl || 0} USDT</code>`;
+      `📈 <b>Дневной отчёт</b>\n` +
+      `Сделок: ${stats.total}\n` +
+      `Побед: ${stats.wins} | Поражений: ${stats.losses}\n` +
+      `Винрейт: ${winRate}%\n` +
+      `Итого PnL: <code>${stats.total_pnl || stats.totalPnl || 0} USDT</code>`;
 
     try {
       await this.sendMessage(msg);
