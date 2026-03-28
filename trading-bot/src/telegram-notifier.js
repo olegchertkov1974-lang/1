@@ -251,8 +251,9 @@ class TelegramNotifier {
 
     for (const [key, pos] of positions) {
       const icon = pos.side === 'long' ? '🟢' : '🔴';
+      const sideRu = pos.side === 'long' ? 'ЛОНГ' : 'ШОРТ';
       msg +=
-        `${icon} <b>${pos.side.toUpperCase()}</b> ${key}\n` +
+        `${icon} <b>${sideRu}</b> ${key}\n` +
         `  Вход: <code>${pos.entry}</code>\n` +
         `  SL: <code>${pos.stopLoss}</code> | TP: <code>${pos.takeProfit}</code>\n` +
         `  Размер: <code>${pos.size}</code>\n\n`;
