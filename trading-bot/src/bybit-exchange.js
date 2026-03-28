@@ -28,6 +28,8 @@ class BybitExchange {
       );
     }
 
+    const isDemo = process.env.BYBIT_DEMO === 'true';
+
     this.exchange = new ccxt.bybit({
       apiKey,
       secret: apiSecret,
@@ -35,12 +37,13 @@ class BybitExchange {
       options: {
         defaultType: 'linear', // USDT perpetual
         adjustForTimeDifference: true,
+        enableDemoTrading: isDemo, // ccxt built-in demo trading support
       },
       timeout: 30000,
     });
 
-    // Bybit Demo Trading has built-in URL set in ccxt: urls.demotrading
-    if (process.env.BYBIT_DEMO === 'true') {
+    if (isDemo) {
+      // ccxt has built-in demotrading URLs (api-demo.bybit.com)
       this.exchange.urls['api'] = this.exchange.urls['demotrading'];
       logger.info('Bybit: running in DEMO TRADING mode (api-demo.bybit.com)');
     } else if (process.env.BYBIT_TESTNET === 'true') {
