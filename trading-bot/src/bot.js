@@ -59,6 +59,10 @@ class TradingBot {
     // Start webhook server for n8n
     this.webhook.start();
 
+    // Start Telegram command polling
+    this.notifier.setBot(this);
+    this.notifier.startPolling();
+
     // Graceful shutdown
     const shutdown = () => this.stop();
     process.on('SIGINT', shutdown);
@@ -103,6 +107,7 @@ class TradingBot {
   stop() {
     logger.info('Bot stopping...');
     this.running = false;
+    this.notifier.stopPolling();
     this.webhook.stop();
     this.tradeStore.close();
     this.notifier.sendMessage('🛑 <b>Bot stopped</b>').catch(() => {});
