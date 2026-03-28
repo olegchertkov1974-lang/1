@@ -173,6 +173,87 @@ class TradingBot {
     }
   }
 
+  /**
+   * Detect positions closed by exchange (SL/TP hit on Bybit side).
+   */
+  async _detectClosedPositions() {
+    if (this.positions.size === 0) return;
+
+    try {
+      const exchangePositions = await this.exchange.fetchOpenPositions();
+      const exchangePairs = new Set(
+        exchangePositions.map((p) => p.symbol ? p.symbol.replace(':USDT', '') : '')
+      );
+
+      for (const [posKey, pos] of [...this.positions]) {
+        const pair = posKey.split(':')[0];
+        if (!exchangePairs.has(pair)) {
+          // Position no longer exists on exchange — closed by SL/TP
+          logger.info(`Position ${posKey} closed on exchange (SL/TP hit)`);
+          this.positions.delete(posKey);
+          this.riskManager.removePosition(posKey);
+
+          // Determine if TP or SL was hit based on current price
+          let closeReason = 'Закрыта на бирже (SL/TP)';
+          let pnlEstimate = 0;
+          try {
+            const ticker = await this.exchange.fetchTicker(pair);
+            const price = ticker.last || ticker.close || 0;
+            if (pos.side === 'long') {
+              pnlEstimate = (price - pos.entry) * pos.size;
+              if (pos.takeProfit && price >= pos.takeProfit * 0.998) {
+                closeReason = `✅ Закрыта по Take Profit (${pos.takeProfit})`;
+              } else if (pos.stopLoss && price <= pos.stopLoss * 1.002) {
+                closeReason = `🛑 Закрыта по Stop Loss (${pos.stopLoss})`;
+              }
+            } else {
+              pnlEstimate = (pos.entry - price) * pos.size;
+              if (pos.takeProfit && price <= pos.takeProfit * 1.002) {
+                closeReason = `✅ Закрыта по Take Profit (${pos.takeProfit})`;
+              } else if (pos.stopLoss && price >= pos.stopLoss * 0.998) {
+                closeReason = `🛑 Закрыта по Stop Loss (${pos.stopLoss})`;
+              }
+            }
+          } catch (e) { /* ignore ticker error */ }
+
+          const pnlIcon = pnlEstimate >= 0 ? '✅' : '❌';
+          const sideRu = pos.side === 'long' ? 'ЛОНГ' : 'ШОРТ';
+          const msg =
+            `${pnlIcon} <b>Позиция закрыта</b>\n\n` +
+            `${pos.side === 'long' ? '🟢' : '🔴'} <b>${sideRu}</b> ${pair}\n` +
+            `Вход: <code>${pos.entry}</code>\n` +
+            `SL: <code>${pos.stopLoss}</code> | TP: <code>${pos.takeProfit}</code>\n` +
+            `Размер: <code>${pos.size}</code>\n` +
+            `PnL: <code>~${pnlEstimate.toFixed(2)} USDT</code>\n\n` +
+            `Причина: ${closeReason}`;
+
+          await this.notifier.sendMessage(msg);
+
+          // Save to trade store
+          this.tradeStore.saveTrade({
+            pair,
+            timeframe: 'synced',
+            side: pos.side,
+            entry: pos.entry,
+            exitPrice: 0,
+            stopLoss: pos.stopLoss,
+            takeProfit: pos.takeProfit,
+            size: pos.size,
+            pnl: parseFloat(pnlEstimate.toFixed(2)),
+            entryReason: pos.entryReason || '',
+            exitReason: closeReason,
+            duration: pos.openedAt ? `${Math.round((Date.now() - new Date(pos.openedAt).getTime()) / 60000)}m` : '?',
+            closedAt: new Date().toISOString(),
+          });
+
+          await this.webhook.pushToN8n('trade_closed', { pair, side: pos.side, reason: closeReason, pnl: pnlEstimate });
+        }
+      }
+    } catch (err) {
+      logger.error(`_detectClosedPositions error: ${err.message}`);
+    }
+  }
+
   stop() {
     logger.info('Bot stopping...');
     this.running = false;
@@ -186,6 +267,9 @@ class TradingBot {
   async _tick() {
     const balance = await this.exchange.fetchBalance();
     logger.info(`Balance: ${balance.free} USDT (total: ${balance.total})`);
+
+    // Check if any tracked positions were closed on exchange (by SL/TP)
+    await this._detectClosedPositions();
 
     for (const pair of PAIRS) {
       for (const tf of TIMEFRAMES) {
