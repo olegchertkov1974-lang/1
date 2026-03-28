@@ -39,8 +39,15 @@ class BybitExchange {
       timeout: 30000,
     });
 
-    // Use testnet if configured
-    if (process.env.BYBIT_TESTNET === 'true') {
+    // Use testnet or demo trading if configured
+    if (process.env.BYBIT_DEMO === 'true') {
+      // Bybit Demo Trading uses a separate API endpoint (not testnet!)
+      this.exchange.urls['api'] = {
+        public: 'https://api-demo.bybit.com',
+        private: 'https://api-demo.bybit.com',
+      };
+      logger.info('Bybit: running in DEMO TRADING mode (api-demo.bybit.com)');
+    } else if (process.env.BYBIT_TESTNET === 'true') {
       this.exchange.setSandboxMode(true);
       logger.info('Bybit: running in TESTNET mode');
     }
