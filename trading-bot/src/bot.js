@@ -63,6 +63,9 @@ class TradingBot {
     this.notifier.setBot(this);
     this.notifier.startPolling();
 
+    // Sync open positions from Bybit
+    await this._syncPositionsFromExchange();
+
     // Graceful shutdown
     const shutdown = () => this.stop();
     process.on('SIGINT', shutdown);
@@ -101,6 +104,56 @@ class TradingBot {
       if (this.running) {
         await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
       }
+    }
+  }
+
+  /**
+   * Sync open positions from Bybit on startup so bot doesn't lose track after restart.
+   */
+  async _syncPositionsFromExchange() {
+    try {
+      const openPositions = await this.exchange.fetchOpenPositions();
+      if (openPositions.length === 0) {
+        logger.info('No open positions on exchange');
+        return;
+      }
+
+      for (const pos of openPositions) {
+        // pos.symbol is like 'BTC/USDT:USDT', extract base pair
+        const pair = pos.symbol ? pos.symbol.replace(':USDT', '') : pos.info?.symbol;
+        if (!pair || !PAIRS.includes(pair)) continue;
+
+        const side = pos.side === 'long' ? 'long' : 'short';
+        const posKey = `${pair}:synced`;
+
+        const position = {
+          id: posKey,
+          side,
+          entry: pos.entryPrice || pos.info?.avgPrice || 0,
+          stopLoss: pos.stopLossPrice || 0,
+          takeProfit: pos.takeProfitPrice || 0,
+          size: pos.contracts || 0,
+          orderId: 'synced',
+          entryReason: 'Synced from exchange after restart',
+          openedAt: pos.timestamp ? new Date(pos.timestamp).toISOString() : new Date().toISOString(),
+        };
+
+        this.positions.set(posKey, position);
+        this.riskManager.addPosition(position);
+        logger.info(`Synced position: ${side} ${pair} size=${position.size} entry=${position.entry}`);
+      }
+
+      logger.info(`Synced ${this.positions.size} positions from exchange`);
+
+      if (this.positions.size > 0) {
+        try {
+          await this.notifier.sendMessage(
+            `🔄 <b>Синхронизация</b>\nНайдено позиций на бирже: ${this.positions.size}`
+          );
+        } catch (e) { /* ignore */ }
+      }
+    } catch (err) {
+      logger.error(`Failed to sync positions: ${err.message}`);
     }
   }
 

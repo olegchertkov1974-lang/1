@@ -208,11 +208,13 @@ class TelegramNotifier {
       const paused = this._bot.paused;
       const stats = this._bot.tradeStore.getStats();
 
+      const usedMargin = (balance.total - balance.free).toFixed(2);
       const msg =
         `📊 <b>Статус бота</b>\n\n` +
         `Состояние: ${paused ? '⏸ Пауза' : '✅ Активен'}\n` +
-        `Баланс: <code>${balance.free.toFixed(2)} USDT</code>\n` +
-        `Всего: <code>${balance.total.toFixed(2)} USDT</code>\n` +
+        `💰 Баланс: <code>${balance.total.toFixed(2)} USDT</code>\n` +
+        `├ Свободно: <code>${balance.free.toFixed(2)} USDT</code>\n` +
+        `└ В маржe: <code>${usedMargin} USDT</code>\n` +
         `Открытых позиций: ${posCount}\n` +
         `Всего сделок: ${stats.total || 0}\n` +
         `Побед/Поражений: ${stats.wins || 0}/${stats.losses || 0}\n` +
