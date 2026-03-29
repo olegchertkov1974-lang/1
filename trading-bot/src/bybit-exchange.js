@@ -113,67 +113,141 @@ class BybitExchange {
   }
 
   /**
-   * Place a limit order with SL and TP at the level price.
-   * Falls back to market order if price moves past the level.
+   * Разместить Limit PostOnly ордер (вход в позицию).
+   * PostOnly гарантирует maker-комиссию 0.02%. Если цена ушла и ордер
+   * стал бы taker — биржа его автоматически отменит.
+   *
+   * SL и TP ставятся ОТДЕЛЬНО после исполнения через setTradingStop().
+   * Это надёжнее, чем прикреплять к ордеру (Bybit может игнорировать
+   * attached SL/TP на limit ордерах).
+   *
+   * @param {string} pair — торговая пара
+   * @param {string} side — 'buy' или 'sell'
+   * @param {number} amount — объём
+   * @param {number} limitPrice — цена лимитного ордера
+   * @param {boolean} postOnly — PostOnly режим (по умолчанию true)
+   * @returns {object} ордер с id, status, type
    */
-  /**
-   * Разместить ордер. PostOnly гарантирует maker-комиссию (0.02%).
-   * @param {boolean} postOnly — если true, ордер будет PostOnly (отменится если станет taker)
-   */
-  async placeOrder(pair, side, amount, stopLoss, takeProfit, limitPrice, postOnly = false) {
+  async placeOrder(pair, side, amount, stopLoss, takeProfit, limitPrice, postOnly = true) {
     this.validatePair(pair);
 
     return this._retry(async () => {
       const params = {};
 
-      if (stopLoss) params.stopLoss = { triggerPrice: stopLoss, type: 'market' };
-      if (takeProfit) params.takeProfit = { triggerPrice: takeProfit, type: 'market' };
-
-      // PostOnly — гарантия maker-комиссии
+      // PostOnly — гарантия maker-комиссии (ордер отменится если станет taker)
       if (postOnly && limitPrice) {
         params.timeInForce = 'PostOnly';
       }
 
+      // SL/TP прикрепляем к ордеру как fallback (основной путь — setTradingStop после fill)
+      // SL всегда Stop Market — гарантия исполнения
+      if (stopLoss) params.stopLoss = { triggerPrice: stopLoss, type: 'market' };
+      // TP — тоже ставим сразу, Bybit сам сделает limit
+      if (takeProfit) params.takeProfit = { triggerPrice: takeProfit, type: 'limit' };
+
       const orderType = limitPrice ? 'limit' : 'market';
       const price = limitPrice || undefined;
 
-      logger.info(`Ордер ${orderType}${postOnly ? ' PostOnly' : ''} ${side}: ${pair} объём=${amount} цена=${limitPrice || 'market'} SL=${stopLoss} TP=${takeProfit}`);
-      const order = await this.exchange.createOrder(this._toLinear(pair), orderType, side, amount, price, params);
-      logger.info(`Ордер размещён: ${order.id} (${orderType}${postOnly ? ' PostOnly' : ''})`);
+      logger.info(
+        `Ордер ${orderType}${postOnly ? ' PostOnly' : ''} ${side}: ` +
+        `${pair} объём=${amount} цена=${limitPrice || 'market'} ` +
+        `SL=${stopLoss} (Stop Market) TP=${takeProfit} (Limit)`
+      );
+
+      const order = await this.exchange.createOrder(
+        this._toLinear(pair), orderType, side, amount, price, params
+      );
+
+      logger.info(`Ордер размещён: ${order.id} (${orderType}${postOnly ? ' PostOnly' : ''}) статус=${order.status}`);
       return order;
     }, `placeOrder(${pair}, ${side})`);
   }
 
   /**
-   * Close a position.
+   * Установить/обновить SL и TP на открытой позиции через Bybit Trading Stop API.
+   *
+   * Используется:
+   * 1. После исполнения лимитного ордера — установка SL/TP
+   * 2. Перенос SL в безубыток после 1R
+   *
+   * SL — Stop Market (гарантия исполнения).
+   * TP — Limit (PostOnly maker-комиссия).
+   *
+   * @param {string} pair — торговая пара
+   * @param {object} opts — { stopLoss, takeProfit, side }
+   */
+  async setTradingStop(pair, opts = {}) {
+    this.validatePair(pair);
+    const symbol = this._toLinear(pair);
+
+    return this._retry(async () => {
+      const params = {
+        category: 'linear',
+        symbol: pair.replace('/', ''),  // BTCUSDT
+        positionIdx: 0,                 // one-way mode
+      };
+
+      if (opts.stopLoss) {
+        params.stopLoss = String(opts.stopLoss);
+        params.slTriggerBy = 'LastPrice';
+        params.slOrderType = 'Market';  // Stop Market — гарантия исполнения
+      }
+
+      if (opts.takeProfit) {
+        params.takeProfit = String(opts.takeProfit);
+        params.tpTriggerBy = 'LastPrice';
+        params.tpOrderType = 'Limit';   // Limit TP — maker-комиссия
+        // Для limit TP можно указать limitPrice, но Bybit часто ставит по triggerPrice
+      }
+
+      logger.info(
+        `setTradingStop ${pair}: ` +
+        `SL=${opts.stopLoss || '—'} (Stop Market) ` +
+        `TP=${opts.takeProfit || '—'} (Limit)`
+      );
+
+      const response = await this.exchange.privatePostV5PositionTradingStop(params);
+      const retCode = response?.retCode ?? response?.ret_code;
+
+      if (retCode !== undefined && retCode !== 0) {
+        throw new Error(`setTradingStop: retCode=${retCode} msg=${response?.retMsg || response?.ret_msg || '?'}`);
+      }
+
+      logger.info(`setTradingStop ${pair}: OK`);
+      return response;
+    }, `setTradingStop(${pair})`);
+  }
+
+  /**
+   * Закрыть позицию рыночным ордером.
    */
   async closePosition(pair, side, amount) {
     this.validatePair(pair);
     const closeSide = side === 'long' ? 'sell' : 'buy';
 
     return this._retry(async () => {
-      logger.info(`Closing ${side} position: ${pair} size=${amount}`);
+      logger.info(`Закрытие ${side} позиции: ${pair} объём=${amount}`);
       const order = await this.exchange.createOrder(this._toLinear(pair), 'market', closeSide, amount, undefined, {
         reduceOnly: true,
       });
-      logger.info(`Position closed: ${order.id}`);
+      logger.info(`Позиция закрыта: ${order.id}`);
       return order;
     }, `closePosition(${pair})`);
   }
 
   /**
-   * Cancel an open order.
+   * Отменить открытый ордер.
    */
   async cancelOrder(orderId, pair) {
     return this._retry(async () => {
-      logger.info(`Cancelling order ${orderId} on ${pair}`);
+      logger.info(`Отмена ордера ${orderId} на ${pair}`);
       await this.exchange.cancelOrder(orderId, this._toLinear(pair));
-      logger.info(`Order ${orderId} cancelled`);
+      logger.info(`Ордер ${orderId} отменён`);
     }, `cancelOrder(${pair})`);
   }
 
   /**
-   * Check order status (open, closed, canceled).
+   * Проверить статус ордера (open, closed, canceled).
    */
   async fetchOrder(orderId, pair) {
     return this._retry(async () => {

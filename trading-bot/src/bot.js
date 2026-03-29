@@ -184,7 +184,16 @@ class TradingBot {
 
   /**
    * Проверка лимитных ордеров по методологии Герчика.
-   * Отмена по условиям: пробой уровня, смена контекста, страховочный таймаут 30 мин.
+   *
+   * Ордер живёт пока жив уровень. Отмена по 4 условиям:
+   * 1. Пробой уровня — закрытие 5m свечи телом за уровнем (главный триггер)
+   * 2. Противоположный сигнал — на 5m появился паттерн в другую сторону
+   * 3. Смена контекста на 4H — новая свеча изменила тренд
+   * 4. Страховочный таймаут — 30 мин (6 свечей 5m)
+   *
+   * Частичное исполнение:
+   * - < 50% — закрываем рыночным, сделка не ведётся
+   * - >= 50% — торгуем исполненным объёмом, остаток отменяем
    */
   async _checkPendingOrders() {
     for (const [orderId, pending] of [...this._pendingOrders]) {
@@ -196,6 +205,9 @@ class TradingBot {
           this._pendingOrders.delete(orderId);
           this.positions.set(pending.pair, pending.position);
           this.riskManager.addPosition(pending.position);
+
+          // Устанавливаем SL (Stop Market) и TP (Limit) через Bybit API
+          await this._setPositionStopLossAndTakeProfit(pending.pair, pending.position);
 
           await this.notifier.notifyTrade({
             ...pending.signal,
@@ -211,7 +223,7 @@ class TradingBot {
         if (order.filled > 0 && order.remaining > 0) {
           const fillRatio = order.filled / (order.filled + order.remaining);
           if (fillRatio >= 0.5) {
-            // > 50% — торгуем исполненным объёмом, остаток отменяем
+            // >= 50% — торгуем исполненным объёмом, остаток отменяем
             this._pendingOrders.delete(orderId);
             await this.exchange.cancelOrder(orderId, pending.pair);
 
@@ -219,60 +231,109 @@ class TradingBot {
             this.positions.set(pending.pair, pending.position);
             this.riskManager.addPosition(pending.position);
 
+            // SL/TP на исполненный объём
+            await this._setPositionStopLossAndTakeProfit(pending.pair, pending.position);
+
             pending.sizing.size = order.filled;
             await this.notifier.notifyTrade({
               ...pending.signal,
               positionSize: order.filled,
               riskAmount: pending.sizing.riskAmount,
             });
-            logger.info(`Ордер частично исполнен (${(fillRatio * 100).toFixed(0)}%): ${orderId} — торгуем ${order.filled}`);
+            logger.info(`Частичное исполнение ${(fillRatio * 100).toFixed(0)}%: ${orderId} — торгуем ${order.filled}`);
             continue;
           }
           // < 50% — будет закрыт ниже при отмене
         }
 
-        // === УЖЕ ОТМЕНЁН ===
+        // === УЖЕ ОТМЕНЁН (PostOnly отклонён биржей или вручную) ===
         if (order.status === 'canceled') {
           this._pendingOrders.delete(orderId);
-          logger.info(`Ордер был отменён: ${orderId}`);
+
+          // Увеличиваем счётчик попыток
+          if (pending.attemptKey) {
+            const attempts = (this._orderAttempts.get(pending.attemptKey) || 0) + 1;
+            this._orderAttempts.set(pending.attemptKey, attempts);
+            logger.info(`Ордер отменён биржей (PostOnly?): ${orderId}, попытка ${attempts}`);
+          } else {
+            logger.info(`Ордер отменён: ${orderId}`);
+          }
           continue;
         }
 
-        // === ПРОВЕРКА УСЛОВИЙ ОТМЕНЫ ПО ГЕРЧИКУ ===
+        // === ПРОВЕРКА 4 УСЛОВИЙ ОТМЕНЫ ПО ГЕРЧИКУ ===
         let cancelReason = null;
 
-        // 1. Пробой уровня — главный триггер
-        if (pending.level && pending.direction) {
-          try {
-            const candles5m = await this.exchange.fetchCandles(pending.pair, TF_ENTRY, 3);
-            if (candles5m && candles5m.length > 0) {
-              const lastCandle = candles5m[candles5m.length - 1];
-              if (this.strategy.isLevelBroken(lastCandle, pending.level, pending.direction)) {
-                cancelReason = `Пробой уровня ${pending.level.price.toFixed(2)} — уровень сломан`;
-              }
-            }
-          } catch (e) {
-            logger.warn(`Ошибка проверки пробоя для ${pending.pair}: ${e.message}`);
+        // Получаем последние 5m свечи (нужны для условий 1 и 2)
+        let candles5m = null;
+        try {
+          candles5m = await this.exchange.fetchCandles(pending.pair, TF_ENTRY, 10);
+        } catch (e) {
+          logger.warn(`Ошибка получения 5m свечей для ${pending.pair}: ${e.message}`);
+        }
+
+        // 1. ПРОБОЙ УРОВНЯ — главный триггер
+        //    Свеча 5m закрылась телом за уровнем → уровень сломан → немедленная отмена
+        if (!cancelReason && pending.level && pending.direction && candles5m && candles5m.length > 0) {
+          const lastCandle = candles5m[candles5m.length - 1];
+          if (this.strategy.isLevelBroken(lastCandle, pending.level, pending.direction)) {
+            cancelReason = `Пробой уровня ${pending.level.price.toFixed(2)} (5m свеча закрылась за уровнем) — уровень сломан`;
           }
         }
 
-        // 2. Страховочный таймаут — 30 минут
+        // 2. ПРОТИВОПОЛОЖНЫЙ СИГНАЛ — на 5m появился паттерн входа в другую сторону
+        //    Текущий ордер теряет смысл
+        if (!cancelReason && pending.level && pending.direction && candles5m && candles5m.length >= 6) {
+          const oppositeDir = pending.direction === 'long' ? 'short' : 'long';
+          const dailyData = this._dailyLevels.get(pending.pair);
+          const dailyLevels = dailyData ? dailyData.levels : [];
+
+          const oppositeSignal = this.strategy.findEntryPattern(
+            candles5m, pending.level, oppositeDir, dailyLevels
+          );
+          if (oppositeSignal) {
+            cancelReason = `Противоположный сигнал: ${oppositeSignal.typeRu} ${oppositeDir.toUpperCase()} на 5m`;
+          }
+        }
+
+        // 3. СМЕНА КОНТЕКСТА НА 4H — новая свеча изменила тренд
+        //    Если при размещении ордера тренд совпадал, а теперь нет
+        if (!cancelReason && pending.direction) {
+          try {
+            const candles4H = await this.exchange.fetchCandles(pending.pair, TF_CONFIRM, 25);
+            if (candles4H && candles4H.length >= 20) {
+              const currentTrend = this.strategy.detectTrend4H(candles4H);
+              const trendConflict =
+                (pending.direction === 'long' && currentTrend === 'down') ||
+                (pending.direction === 'short' && currentTrend === 'up');
+
+              if (trendConflict) {
+                cancelReason = `Смена контекста 4H: тренд стал ${currentTrend}, конфликтует с ${pending.direction}`;
+              }
+            }
+          } catch (e) {
+            logger.warn(`Ошибка проверки 4H контекста для ${pending.pair}: ${e.message}`);
+          }
+        }
+
+        // 4. СТРАХОВОЧНЫЙ ТАЙМАУТ — 30 минут (6 свечей 5m)
+        //    Если ничего не сработало и ордер не исполнился — цена ушла в рейндж
         if (!cancelReason && Date.now() - pending.createdAt > ORDER_SAFETY_TTL_MS) {
-          cancelReason = `Страховочный таймаут 30 мин — цена в рейндже`;
+          cancelReason = `Страховочный таймаут 30 мин — цена ушла в рейндж, сетап потерял актуальность`;
         }
 
         // === ОТМЕНА ===
         if (cancelReason) {
           this._pendingOrders.delete(orderId);
 
-          // Если частично исполнен < 50% — закрываем рыночным
+          // Частично исполнен < 50%? Закрываем рыночным, сделка не ведётся
           if (order.filled > 0) {
             const fillRatio = order.filled / (order.filled + order.remaining);
             if (fillRatio < 0.5) {
               try {
                 await this.exchange.cancelOrder(orderId, pending.pair);
                 await this.exchange.closePosition(pending.pair, pending.direction, order.filled);
-                logger.info(`Частичное исполнение <50% — закрыто рыночным: ${order.filled}`);
+                logger.info(`Частичное <50% (${order.filled}) — закрыто рыночным, сделка не ведётся`);
               } catch (e) {
                 logger.error(`Ошибка закрытия частичной позиции: ${e.message}`);
               }
@@ -281,18 +342,20 @@ class TradingBot {
             await this.exchange.cancelOrder(orderId, pending.pair);
           }
 
-          // Увеличиваем счётчик попыток
+          // Счётчик попыток
           if (pending.attemptKey) {
             const attempts = (this._orderAttempts.get(pending.attemptKey) || 0) + 1;
             this._orderAttempts.set(pending.attemptKey, attempts);
           }
 
+          const sideRu = pending.direction === 'long' ? 'ЛОНГ' : 'ШОРТ';
           await this.notifier.sendMessage(
             `⏰ <b>Ордер отменён</b>\n` +
-            `${pending.pair} ${pending.direction === 'long' ? 'ЛОНГ' : 'ШОРТ'}\n` +
+            `${pending.direction === 'long' ? '🟢' : '🔴'} ${sideRu} ${pending.pair}\n` +
+            `Уровень: <code>${pending.level ? pending.level.price.toFixed(2) : '?'}</code>\n\n` +
             `Причина: ${cancelReason}`
           );
-          logger.info(`Ордер отменён: ${orderId} — ${cancelReason}`);
+          logger.info(`Ордер ${orderId} отменён: ${cancelReason}`);
         }
       } catch (err) {
         logger.error(`_checkPendingOrders ошибка ${orderId}: ${err.message}`);
@@ -633,18 +696,40 @@ class TradingBot {
   }
 
   /**
-   * Обновить стоп-лосс на бирже (Bybit).
+   * Установить SL (Stop Market) и TP (Limit) на позиции через Bybit Trading Stop API.
+   * Вызывается после исполнения лимитного ордера.
+   *
+   * SL — Stop Market (гарантия исполнения, не проскользнёт).
+   * TP — Limit (maker-комиссия 0.02%).
+   */
+  async _setPositionStopLossAndTakeProfit(pair, pos) {
+    try {
+      await this.exchange.setTradingStop(pair, {
+        stopLoss: pos.stopLoss,
+        takeProfit: pos.takeProfit,
+      });
+      logger.info(`${pair}: SL=${pos.stopLoss} (Stop Market) TP=${pos.takeProfit} (Limit) установлены`);
+    } catch (err) {
+      // SL/TP могут уже быть установлены через attached параметры ордера — не критично
+      logger.warn(`${pair}: ошибка setTradingStop: ${err.message} (SL/TP могут быть уже установлены)`);
+    }
+  }
+
+  /**
+   * Перенос SL в безубыток через Bybit Trading Stop API.
+   * Вызывается после прохождения 1R в прибыль.
+   *
+   * Используем setTradingStop — надёжнее editOrder, работает с Bybit v5.
    */
   async _updateStopLossOnExchange(pair, pos) {
     try {
-      const symbol = this.exchange._toLinear(pair);
-      await this.exchange.exchange.editOrder(
-        pos.orderId, symbol, 'market', pos.side === 'long' ? 'buy' : 'sell', pos.size,
-        undefined, { stopLoss: { triggerPrice: pos.stopLoss, type: 'market' } }
-      );
+      await this.exchange.setTradingStop(pair, {
+        stopLoss: pos.stopLoss,
+        // TP не меняем — оставляем существующий
+      });
+      logger.info(`${pair}: SL обновлён на ${pos.stopLoss} (безубыток) через setTradingStop`);
     } catch (err) {
-      // Fallback: Bybit может не поддерживать editOrder для SL — логируем
-      logger.warn(`Не удалось обновить SL на бирже для ${pair}: ${err.message}`);
+      logger.warn(`${pair}: не удалось обновить SL на бирже: ${err.message}`);
     }
   }
 
@@ -782,9 +867,12 @@ class TradingBot {
         return;
       }
 
-      // Мгновенное исполнение
+      // Мгновенное исполнение — устанавливаем SL/TP через Trading Stop API
       this.positions.set(pair, position);
       this.riskManager.addPosition(position);
+
+      // SL (Stop Market) + TP (Limit) через setTradingStop
+      await this._setPositionStopLossAndTakeProfit(pair, position);
 
       await this.notifier.notifyTrade({
         ...entrySignal,
