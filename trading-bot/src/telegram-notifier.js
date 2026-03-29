@@ -435,16 +435,39 @@ class TelegramNotifier {
   async notifyTrade(signal) {
     const icon = signal.signal === 'long' ? '🟢' : signal.signal === 'short' ? '🔴' : '⚪';
     const sideRu = signal.signal === 'long' ? 'ЛОНГ' : 'ШОРТ';
-    const msg =
-      `${icon} <b>${sideRu}</b> ${signal.type || ''}\n` +
+    const typeRu = signal.type === 'breakout' ? 'Пробой' : signal.type === 'bounce' ? 'Отскок' : (signal.type || '');
+
+    let msg =
+      `${icon} <b>ОТКРЫТА ПОЗИЦИЯ: ${sideRu}</b>\n` +
+      `━━━━━━━━━━━━━━━━━━\n` +
       `Пара: <code>${signal.pair || 'N/A'}</code>\n` +
+      `Тип: <b>${typeRu}</b>\n` +
       `Вход: <code>${signal.entry}</code>\n` +
       `SL: <code>${signal.stopLoss}</code>\n` +
       `TP: <code>${signal.takeProfit}</code>\n` +
       `Размер: <code>${signal.positionSize}</code>\n` +
       `Риск: <code>${signal.riskPct}% ($${signal.riskAmount || '?'})</code>\n` +
       `R:R: <code>1:${signal.riskRewardRatio}</code>\n` +
-      `Причина: ${signal.reason || ''}`;
+      `\n📐 <b>Уровень:</b> ${signal.reason || ''}`;
+
+    // AI analysis details
+    if (signal._aiConfidence) {
+      msg += `\n\n🤖 <b>AI анализ</b> (${signal._aiConfidence}%):\n${signal._aiReason || ''}`;
+    }
+
+    // Market regime
+    if (signal._regime && signal._regime.regime !== 'unknown') {
+      const regimeRu = {
+        'trending_up': '📈 Восходящий тренд',
+        'trending_down': '📉 Нисходящий тренд',
+        'ranging': '↔️ Боковик (флэт)',
+        'volatile': '⚡ Высокая волатильность',
+      };
+      msg += `\n\n🌍 <b>Режим рынка:</b> ${regimeRu[signal._regime.regime] || signal._regime.regime}`;
+      if (signal._regime.suggestion) {
+        msg += `\n${signal._regime.suggestion}`;
+      }
+    }
 
     const keyboard = {
       inline_keyboard: [

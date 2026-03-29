@@ -432,6 +432,11 @@ class TradingBot {
       }
 
       logger.info(`${pair} ${timeframe}: AI approved (${aiResult.confidence}%) — ${aiResult.reason}`);
+
+      // Save AI analysis for trade notification
+      entrySignal._aiReason = aiResult.reason;
+      entrySignal._aiConfidence = aiResult.confidence;
+      entrySignal._regime = regime;
     } else {
       // No AI — still push to n8n
       await this.webhook.pushToN8n('signal_pending', {
