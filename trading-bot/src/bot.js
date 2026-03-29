@@ -43,6 +43,7 @@ class TradingBot {
     this.paused = false;
     this.positions = new Map(); // pair:tf -> position info
     this._pendingSignals = new Map();
+    this._pendingOrders = new Map(); // orderId -> { pair, posKey, position, createdAt }
   }
 
   async start() {
@@ -174,6 +175,55 @@ class TradingBot {
   }
 
   /**
+   * Check pending limit orders: fill → register position, timeout → cancel.
+   */
+  async _checkPendingOrders() {
+    const LIMIT_ORDER_TIMEOUT = 5 * 60 * 1000; // 5 minutes
+
+    for (const [orderId, pending] of [...this._pendingOrders]) {
+      try {
+        const order = await this.exchange.fetchOrder(orderId, pending.pair);
+
+        if (order.status === 'closed' || order.filled > 0) {
+          // Order filled — register position
+          this._pendingOrders.delete(orderId);
+          this.positions.set(pending.posKey, pending.position);
+          this.riskManager.addPosition(pending.position);
+
+          await this.notifier.notifyTrade({
+            ...pending.signal,
+            positionSize: pending.sizing.size,
+            riskAmount: pending.sizing.riskAmount,
+          });
+          await this.webhook.pushToN8n('trade_opened', pending.position);
+          logger.info(`Limit order filled: ${orderId} — ${pending.pair}`);
+
+        } else if (order.status === 'canceled') {
+          // Already canceled
+          this._pendingOrders.delete(orderId);
+          logger.info(`Limit order was canceled: ${orderId}`);
+
+        } else if (Date.now() - pending.createdAt > LIMIT_ORDER_TIMEOUT) {
+          // Timeout — cancel order
+          this._pendingOrders.delete(orderId);
+          await this.exchange.cancelOrder(orderId, pending.pair);
+          await this.notifier.sendMessage(
+            `⏰ <b>Лимитный ордер отменён</b>\n` +
+            `${pending.pair} — цена не дошла до уровня за 5 мин`
+          );
+          logger.info(`Limit order timed out and canceled: ${orderId}`);
+        }
+      } catch (err) {
+        logger.error(`_checkPendingOrders error for ${orderId}: ${err.message}`);
+        // If order not found, remove from tracking
+        if (err.message.includes('not found') || err.message.includes('does not exist')) {
+          this._pendingOrders.delete(orderId);
+        }
+      }
+    }
+  }
+
+  /**
    * Detect positions closed by exchange (SL/TP hit on Bybit side).
    */
   async _detectClosedPositions() {
@@ -267,6 +317,9 @@ class TradingBot {
   async _tick() {
     const balance = await this.exchange.fetchBalance();
     logger.info(`Balance: ${balance.free} USDT (total: ${balance.total})`);
+
+    // Check pending limit orders (fill or cancel after timeout)
+    await this._checkPendingOrders();
 
     // Check if any tracked positions were closed on exchange (by SL/TP)
     await this._detectClosedPositions();
@@ -480,7 +533,8 @@ class TradingBot {
         entrySignal.signal === 'long' ? 'buy' : 'sell',
         sizing.size,
         entrySignal.stopLoss,
-        entrySignal.takeProfit
+        entrySignal.takeProfit,
+        entrySignal.entry // limit price at level
       );
 
       const position = {
@@ -495,6 +549,27 @@ class TradingBot {
         openedAt: new Date().toISOString(),
       };
 
+      // For limit orders, track as pending until filled
+      if (result.status === 'open' || result.type === 'limit') {
+        this._pendingOrders.set(result.id, {
+          pair,
+          posKey,
+          position,
+          signal: entrySignal,
+          sizing,
+          createdAt: Date.now(),
+        });
+        logger.info(`Limit order pending: ${result.id} — waiting for fill`);
+        await this.notifier.sendMessage(
+          `⏳ <b>Лимитный ордер размещён</b>\n` +
+          `${entrySignal.signal === 'long' ? '🟢 ЛОНГ' : '🔴 ШОРТ'} ${pair}\n` +
+          `Цена: <code>${entrySignal.entry}</code>\n` +
+          `Ожидание исполнения (макс 5 мин)`
+        );
+        return;
+      }
+
+      // Market order or instantly filled limit — register position
       this.positions.set(posKey, position);
       this.riskManager.addPosition(position);
 

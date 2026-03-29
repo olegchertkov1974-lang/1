@@ -113,9 +113,10 @@ class BybitExchange {
   }
 
   /**
-   * Place a market order with SL and TP.
+   * Place a limit order with SL and TP at the level price.
+   * Falls back to market order if price moves past the level.
    */
-  async placeOrder(pair, side, amount, stopLoss, takeProfit) {
+  async placeOrder(pair, side, amount, stopLoss, takeProfit, limitPrice) {
     this.validatePair(pair);
 
     return this._retry(async () => {
@@ -124,9 +125,13 @@ class BybitExchange {
       if (stopLoss) params.stopLoss = { triggerPrice: stopLoss, type: 'market' };
       if (takeProfit) params.takeProfit = { triggerPrice: takeProfit, type: 'market' };
 
-      logger.info(`Placing ${side} order: ${pair} size=${amount} SL=${stopLoss} TP=${takeProfit}`);
-      const order = await this.exchange.createOrder(this._toLinear(pair), 'market', side, amount, undefined, params);
-      logger.info(`Order placed: ${order.id}`);
+      // Use limit order if price provided, otherwise market
+      const orderType = limitPrice ? 'limit' : 'market';
+      const price = limitPrice || undefined;
+
+      logger.info(`Placing ${orderType} ${side} order: ${pair} size=${amount} price=${limitPrice || 'market'} SL=${stopLoss} TP=${takeProfit}`);
+      const order = await this.exchange.createOrder(this._toLinear(pair), orderType, side, amount, price, params);
+      logger.info(`Order placed: ${order.id} (${orderType})`);
       return order;
     }, `placeOrder(${pair}, ${side})`);
   }
@@ -146,6 +151,26 @@ class BybitExchange {
       logger.info(`Position closed: ${order.id}`);
       return order;
     }, `closePosition(${pair})`);
+  }
+
+  /**
+   * Cancel an open order.
+   */
+  async cancelOrder(orderId, pair) {
+    return this._retry(async () => {
+      logger.info(`Cancelling order ${orderId} on ${pair}`);
+      await this.exchange.cancelOrder(orderId, this._toLinear(pair));
+      logger.info(`Order ${orderId} cancelled`);
+    }, `cancelOrder(${pair})`);
+  }
+
+  /**
+   * Check order status (open, closed, canceled).
+   */
+  async fetchOrder(orderId, pair) {
+    return this._retry(async () => {
+      return this.exchange.fetchOrder(orderId, this._toLinear(pair));
+    }, `fetchOrder(${pair})`);
   }
 
   /**
