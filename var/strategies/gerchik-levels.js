@@ -119,7 +119,7 @@ class GerchikLevels {
               level: level.price,
               risk,
               riskRewardRatio: MIN_RR_RATIO,
-              reason: `Breakout above resistance ${level.price.toFixed(2)}`,
+              reason: `Пробой сопротивления ${level.price.toFixed(2)}`,
             };
           }
         }
@@ -147,7 +147,7 @@ class GerchikLevels {
               level: level.price,
               risk,
               riskRewardRatio: MIN_RR_RATIO,
-              reason: `Breakout below support ${level.price.toFixed(2)}`,
+              reason: `Пробой поддержки ${level.price.toFixed(2)}`,
             };
           }
         }
@@ -175,7 +175,7 @@ class GerchikLevels {
             level: level.price,
             risk,
             riskRewardRatio: MIN_RR_RATIO,
-            reason: `Bounce off support ${level.price.toFixed(2)}`,
+            reason: `Отскок от поддержки ${level.price.toFixed(2)}`,
           };
         }
       }
@@ -202,7 +202,7 @@ class GerchikLevels {
             level: level.price,
             risk,
             riskRewardRatio: MIN_RR_RATIO,
-            reason: `Bounce off resistance ${level.price.toFixed(2)}`,
+            reason: `Отскок от сопротивления ${level.price.toFixed(2)}`,
           };
         }
       }
@@ -240,12 +240,12 @@ class GerchikLevels {
       const zone = level.price * (LEVEL_ZONE_PCT / 100);
       if (position.side === 'long' && level.type === 'resistance') {
         if (current.close >= level.price - zone && current.close < level.price + zone) {
-          return { signal: 'close', reason: `Approaching resistance ${level.price.toFixed(2)}`, price: current.close };
+          return { signal: 'close', reason: `Приближение к сопротивлению ${level.price.toFixed(2)}`, price: current.close };
         }
       }
       if (position.side === 'short' && level.type === 'support') {
         if (current.close <= level.price + zone && current.close > level.price - zone) {
-          return { signal: 'close', reason: `Approaching support ${level.price.toFixed(2)}`, price: current.close };
+          return { signal: 'close', reason: `Приближение к поддержке ${level.price.toFixed(2)}`, price: current.close };
         }
       }
     }
