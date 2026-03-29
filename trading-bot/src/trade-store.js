@@ -43,8 +43,16 @@ class TradeStore {
         exit_price REAL,
         stop_loss REAL,
         take_profit REAL,
+        original_sl REAL,
         size REAL,
         pnl REAL,
+        realized_rr TEXT,
+        close_type TEXT,
+        breakeven_moved INTEGER DEFAULT 0,
+        level_price REAL,
+        level_classification TEXT,
+        level_strength INTEGER,
+        entry_pattern TEXT,
         entry_reason TEXT,
         exit_reason TEXT,
         duration TEXT,
@@ -71,13 +79,21 @@ class TradeStore {
     try {
       const stmt = this.db.prepare(`
         INSERT INTO trades (pair, timeframe, side, entry, exit_price, stop_loss,
-          take_profit, size, pnl, entry_reason, exit_reason, duration, opened_at, closed_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          take_profit, original_sl, size, pnl, realized_rr, close_type, breakeven_moved,
+          level_price, level_classification, level_strength, entry_pattern,
+          entry_reason, exit_reason, duration, opened_at, closed_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `);
       stmt.run(
         trade.pair, trade.timeframe, trade.side, trade.entry,
-        trade.exitPrice, trade.stopLoss, trade.takeProfit, trade.size,
-        trade.pnl, trade.entryReason, trade.exitReason, trade.duration,
+        trade.exitPrice, trade.stopLoss, trade.takeProfit,
+        trade.originalSL || trade.stopLoss,
+        trade.size, trade.pnl,
+        trade.realizedRR || null, trade.closeType || null,
+        trade.breakevenMoved ? 1 : 0,
+        trade.levelPrice || null, trade.levelClassification || null,
+        trade.levelStrength || null, trade.entryPattern || null,
+        trade.entryReason, trade.exitReason, trade.duration,
         trade.openedAt || null, trade.closedAt
       );
     } catch (err) {

@@ -151,16 +151,25 @@ class TradingBot {
         const size = Math.abs(pos.contracts || parseFloat(pos.info?.size || '0'));
         const posKey = pair; // макс 1 позиция на инструмент
 
+        const entryPrice = pos.entryPrice || parseFloat(pos.info?.avgPrice || '0');
+        const stopLossPrice = pos.stopLossPrice || parseFloat(pos.info?.stopLoss || '0');
+        const takeProfitPrice = pos.takeProfitPrice || parseFloat(pos.info?.takeProfit || '0');
+
+        // Определяем, был ли SL перенесён в безубыток
+        const isBreakeven = stopLossPrice > 0 && Math.abs(stopLossPrice - entryPrice) / entryPrice < 0.001;
+
         const position = {
           id: posKey,
           side,
-          entry: pos.entryPrice || parseFloat(pos.info?.avgPrice || '0'),
-          stopLoss: pos.stopLossPrice || parseFloat(pos.info?.stopLoss || '0'),
-          takeProfit: pos.takeProfitPrice || parseFloat(pos.info?.takeProfit || '0'),
+          entry: entryPrice,
+          stopLoss: stopLossPrice,
+          takeProfit: takeProfitPrice,
+          _originalSL: stopLossPrice, // при синхронизации оригинальный SL неизвестен
           size,
           orderId: 'synced',
-          entryReason: 'Synced from exchange after restart',
+          entryReason: 'Синхронизирована с биржи после рестарта',
           openedAt: pos.timestamp ? new Date(pos.timestamp).toISOString() : new Date().toISOString(),
+          _breakevenMoved: isBreakeven,
         };
 
         this.positions.set(posKey, position);
@@ -333,9 +342,21 @@ class TradingBot {
               try {
                 await this.exchange.cancelOrder(orderId, pending.pair);
                 await this.exchange.closePosition(pending.pair, pending.direction, order.filled);
-                logger.info(`Частичное <50% (${order.filled}) — закрыто рыночным, сделка не ведётся`);
+
+                logger.info(
+                  `ЧАСТИЧНОЕ ИСПОЛНЕНИЕ <50% ${pending.pair}: ` +
+                  `исполнено ${order.filled} из ${order.filled + order.remaining} (${(fillRatio * 100).toFixed(0)}%) | ` +
+                  `закрыто рыночным, сделка не ведётся | причина отмены: ${cancelReason}`
+                );
+
+                await this.notifier.sendMessage(
+                  `⚠️ <b>Частичное исполнение <50%</b>\n` +
+                  `${pending.pair} — исполнено ${(fillRatio * 100).toFixed(0)}% (${order.filled})\n` +
+                  `Позиция закрыта рыночным ордером, сделка не ведётся\n` +
+                  `Причина отмены: ${cancelReason}`
+                );
               } catch (e) {
-                logger.error(`Ошибка закрытия частичной позиции: ${e.message}`);
+                logger.error(`Ошибка закрытия частичной позиции ${pending.pair}: ${e.message}`);
               }
             }
           } else {
@@ -367,7 +388,10 @@ class TradingBot {
   }
 
   /**
-   * Detect positions closed by exchange (SL/TP hit on Bybit side).
+   * Детекция позиций, закрытых биржей (SL/TP на стороне Bybit).
+   *
+   * Определяет причину закрытия: стоп, тейк, или безубыток.
+   * Сохраняет сделку в БД, отправляет уведомление, запускает AI анализ.
    */
   async _detectClosedPositions() {
     if (this.positions.size === 0) return;
@@ -380,70 +404,155 @@ class TradingBot {
 
       for (const [posKey, pos] of [...this.positions]) {
         const pair = posKey.split(':')[0];
-        if (!exchangePairs.has(pair)) {
-          // Position no longer exists on exchange — closed by SL/TP
-          logger.info(`Position ${posKey} closed on exchange (SL/TP hit)`);
-          this.positions.delete(posKey);
-          this.riskManager.removePosition(posKey);
+        if (exchangePairs.has(pair)) continue;
 
-          // Determine if TP or SL was hit based on current price
-          let closeReason = 'Закрыта на бирже (SL/TP)';
-          let pnlEstimate = 0;
-          try {
-            const ticker = await this.exchange.fetchTicker(pair);
-            const price = ticker.last || ticker.close || 0;
-            if (pos.side === 'long') {
-              pnlEstimate = (price - pos.entry) * pos.size;
-              if (pos.takeProfit && price >= pos.takeProfit * 0.998) {
-                closeReason = `✅ Закрыта по Take Profit (${pos.takeProfit})`;
-              } else if (pos.stopLoss && price <= pos.stopLoss * 1.002) {
-                closeReason = `🛑 Закрыта по Stop Loss (${pos.stopLoss})`;
-              }
-            } else {
-              pnlEstimate = (pos.entry - price) * pos.size;
-              if (pos.takeProfit && price <= pos.takeProfit * 1.002) {
-                closeReason = `✅ Закрыта по Take Profit (${pos.takeProfit})`;
-              } else if (pos.stopLoss && price >= pos.stopLoss * 0.998) {
-                closeReason = `🛑 Закрыта по Stop Loss (${pos.stopLoss})`;
-              }
+        // Позиция исчезла с биржи — закрыта по SL/TP
+        this.positions.delete(posKey);
+        this.riskManager.removePosition(posKey);
+
+        // Определяем причину закрытия и PnL
+        let closeReason = 'Закрыта на бирже';
+        let closeType = 'unknown'; // 'tp', 'sl', 'breakeven', 'unknown'
+        let exitPrice = 0;
+        let pnlEstimate = 0;
+
+        try {
+          const ticker = await this.exchange.fetchTicker(pair);
+          exitPrice = ticker.last || ticker.close || 0;
+
+          if (pos.side === 'long') {
+            pnlEstimate = (exitPrice - pos.entry) * pos.size;
+          } else {
+            pnlEstimate = (pos.entry - exitPrice) * pos.size;
+          }
+
+          // Определяем тип закрытия
+          if (pos.side === 'long') {
+            if (pos.takeProfit && exitPrice >= pos.takeProfit * 0.998) {
+              closeReason = `Закрыта по Take Profit (${pos.takeProfit})`;
+              closeType = 'tp';
+            } else if (pos._breakevenMoved && pos.stopLoss === pos.entry && exitPrice <= pos.entry * 1.002) {
+              closeReason = `Закрыта по безубытку (SL = вход ${pos.entry})`;
+              closeType = 'breakeven';
+            } else if (pos.stopLoss && exitPrice <= pos.stopLoss * 1.002) {
+              closeReason = `Закрыта по Stop Loss (${pos.stopLoss})`;
+              closeType = 'sl';
             }
-          } catch (e) { /* ignore ticker error */ }
-
-          const pnlIcon = pnlEstimate >= 0 ? '✅' : '❌';
-          const sideRu = pos.side === 'long' ? 'ЛОНГ' : 'ШОРТ';
-          const msg =
-            `${pnlIcon} <b>Позиция закрыта</b>\n\n` +
-            `${pos.side === 'long' ? '🟢' : '🔴'} <b>${sideRu}</b> ${pair}\n` +
-            `Вход: <code>${pos.entry}</code>\n` +
-            `SL: <code>${pos.stopLoss}</code> | TP: <code>${pos.takeProfit}</code>\n` +
-            `Размер: <code>${pos.size}</code>\n` +
-            `PnL: <code>~${pnlEstimate.toFixed(2)} USDT</code>\n\n` +
-            `Причина: ${closeReason}`;
-
-          await this.notifier.sendMessage(msg);
-
-          // Save to trade store
-          this.tradeStore.saveTrade({
-            pair,
-            timeframe: 'synced',
-            side: pos.side,
-            entry: pos.entry,
-            exitPrice: 0,
-            stopLoss: pos.stopLoss,
-            takeProfit: pos.takeProfit,
-            size: pos.size,
-            pnl: parseFloat(pnlEstimate.toFixed(2)),
-            entryReason: pos.entryReason || '',
-            exitReason: closeReason,
-            duration: pos.openedAt ? `${Math.round((Date.now() - new Date(pos.openedAt).getTime()) / 60000)}m` : '?',
-            closedAt: new Date().toISOString(),
-          });
-
-          await this.webhook.pushToN8n('trade_closed', { pair, side: pos.side, reason: closeReason, pnl: pnlEstimate });
+          } else {
+            if (pos.takeProfit && exitPrice <= pos.takeProfit * 1.002) {
+              closeReason = `Закрыта по Take Profit (${pos.takeProfit})`;
+              closeType = 'tp';
+            } else if (pos._breakevenMoved && pos.stopLoss === pos.entry && exitPrice >= pos.entry * 0.998) {
+              closeReason = `Закрыта по безубытку (SL = вход ${pos.entry})`;
+              closeType = 'breakeven';
+            } else if (pos.stopLoss && exitPrice >= pos.stopLoss * 0.998) {
+              closeReason = `Закрыта по Stop Loss (${pos.stopLoss})`;
+              closeType = 'sl';
+            }
+          }
+        } catch (e) {
+          logger.warn(`_detectClosedPositions: ошибка получения цены ${pair}: ${e.message}`);
         }
+
+        // Длительность позиции
+        const durationMs = pos.openedAt ? Date.now() - new Date(pos.openedAt).getTime() : 0;
+        const durationMin = Math.round(durationMs / 60000);
+        const durationStr = durationMin < 60
+          ? `${durationMin}м`
+          : `${Math.floor(durationMin / 60)}ч ${durationMin % 60}м`;
+
+        // R:R реализованный
+        const risk = Math.abs(pos.entry - (pos._originalSL || pos.stopLoss));
+        const realizedRR = risk > 0 ? (pnlEstimate / (risk * pos.size)).toFixed(1) : '?';
+
+        // === ЛОГИРОВАНИЕ (Раздел 10 Герчика) ===
+        const sideRu = pos.side === 'long' ? 'ЛОНГ' : 'ШОРТ';
+        const closeIcon = closeType === 'tp' ? '✅' : closeType === 'breakeven' ? '🔒' : closeType === 'sl' ? '🛑' : '⬜';
+
+        logger.info(
+          `СДЕЛКА ЗАКРЫТА ${pair} ${sideRu} | ` +
+          `результат: ${closeType} | PnL: ${pnlEstimate.toFixed(2)} USDT (${realizedRR}R) | ` +
+          `вход: ${pos.entry} | выход: ${exitPrice} | ` +
+          `SL: ${pos.stopLoss} | TP: ${pos.takeProfit} | ` +
+          `размер: ${pos.size} | длительность: ${durationStr} | ` +
+          `безубыток: ${pos._breakevenMoved ? 'да' : 'нет'} | ` +
+          `причина входа: ${pos.entryReason || '—'} | ` +
+          `причина закрытия: ${closeReason}`
+        );
+
+        // === УВЕДОМЛЕНИЕ В TELEGRAM ===
+        const sideIcon = pos.side === 'long' ? '🟢' : '🔴';
+        const pnlIcon = pnlEstimate > 0 ? '💰' : pnlEstimate < 0 ? '💸' : '🔒';
+
+        const msg =
+          `${closeIcon} <b>Позиция закрыта</b>\n` +
+          `━━━━━━━━━━━━━━━━━━\n` +
+          `${sideIcon} <b>${sideRu}</b> ${pair}\n\n` +
+          `Вход: <code>${pos.entry}</code>\n` +
+          `Выход: <code>${exitPrice || '?'}</code>\n` +
+          `SL: <code>${pos.stopLoss}</code> | TP: <code>${pos.takeProfit}</code>\n` +
+          `Размер: <code>${pos.size}</code>\n\n` +
+          `${pnlIcon} PnL: <code>${pnlEstimate.toFixed(2)} USDT (${realizedRR}R)</code>\n` +
+          `Длительность: ${durationStr}\n` +
+          `Безубыток: ${pos._breakevenMoved ? 'Да (SL был перенесён)' : 'Нет'}\n\n` +
+          `Причина: ${closeReason}`;
+
+        await this.notifier.sendMessage(msg);
+
+        // === СОХРАНЕНИЕ В БД ===
+        const closedAt = new Date().toISOString();
+        const trade = {
+          pair,
+          timeframe: TF_ENTRY,
+          side: pos.side,
+          entry: pos.entry,
+          exitPrice: exitPrice || 0,
+          stopLoss: pos.stopLoss,
+          takeProfit: pos.takeProfit,
+          originalSL: pos._originalSL || pos.stopLoss,
+          size: pos.size,
+          pnl: parseFloat(pnlEstimate.toFixed(2)),
+          realizedRR: realizedRR,
+          closeType: closeType,
+          breakevenMoved: !!pos._breakevenMoved,
+          levelPrice: pos._levelPrice || null,
+          levelClassification: pos._levelClassification || null,
+          levelStrength: pos._levelStrength || null,
+          entryPattern: pos._entryPattern || null,
+          entryReason: pos.entryReason || '',
+          exitReason: closeReason,
+          duration: durationStr,
+          openedAt: pos.openedAt || null,
+          closedAt,
+        };
+        this.tradeStore.saveTrade(trade);
+
+        // === AI АНАЛИЗ ПОСЛЕ ЗАКРЫТИЯ ===
+        if (AI_FILTER_ENABLED && this.aiFilter.enabled) {
+          try {
+            const analysis = await this.aiFilter.analyzeTrade(trade);
+            if (analysis) {
+              this.tradeStore.saveAnalysis(closedAt, analysis);
+              await this.notifier.sendMessage(
+                `📊 <b>AI анализ сделки</b> ${pair}\n` +
+                `Оценка: ${analysis.grade || '—'}\n` +
+                `Уроки: ${(analysis.lessons || []).join('; ') || '—'}\n` +
+                `Совет: ${analysis.improvement || '—'}`
+              );
+            }
+          } catch (aiErr) {
+            logger.warn(`AI анализ сделки ${pair}: ${aiErr.message}`);
+          }
+        }
+
+        await this.webhook.pushToN8n('trade_closed', {
+          pair, side: pos.side, closeType, reason: closeReason,
+          pnl: pnlEstimate, realizedRR, exitPrice, duration: durationStr,
+          breakevenMoved: !!pos._breakevenMoved,
+        });
       }
     } catch (err) {
-      logger.error(`_detectClosedPositions error: ${err.message}`);
+      logger.error(`_detectClosedPositions ошибка: ${err.message}`);
     }
   }
 
@@ -519,13 +628,18 @@ class TradingBot {
           );
         }
 
-        if (levels.length === 0) {
-          logger.info(`${pair}: уровни не найдены на 1D`);
-        }
+        logger.info(`${pair}: найдено ${levels.length} уровней на 1D (из ${dailyCandles.length} свечей)`);
       } catch (err) {
         logger.error(`${pair}: ошибка обновления уровней: ${err.message}`);
       }
     }
+
+    // Итого по всем парам
+    let totalLevels = 0;
+    for (const [pair, data] of this._dailyLevels) {
+      totalLevels += data.levels.length;
+    }
+    logger.info(`Обновление уровней завершено: ${totalLevels} уровней по ${this._dailyLevels.size} парам`);
   }
 
   /**
@@ -616,7 +730,10 @@ class TradingBot {
       // 10. Поиск паттерна входа на 5m
       const signal = this.strategy.findEntryPattern(candles5m, level, direction, dailyLevels);
 
-      if (!signal) continue;
+      if (!signal) {
+        logger.debug(`${pair}: нет паттерна входа на 5m для уровня ${level.price.toFixed(2)} (${direction})`);
+        continue;
+      }
 
       // Проверка макс попыток на этот сетап
       const attemptKey = `${pair}:${level.price.toFixed(2)}:${direction}`;
@@ -648,6 +765,10 @@ class TradingBot {
 
   /**
    * Перенос SL в безубыток после прохождения 1R в прибыль.
+   *
+   * Герчик: после прохождения 1R — SL на уровень входа.
+   * Дальнейший трейлинг НЕ применяется.
+   * Позиция закрывается ТОЛЬКО по тейку или по стопу в безубытке.
    */
   async _checkBreakeven() {
     for (const [pair, pos] of this.positions) {
@@ -659,35 +780,54 @@ class TradingBot {
         if (!currentPrice) continue;
 
         const risk = Math.abs(pos.entry - pos.stopLoss);
+        if (risk <= 0) continue;
 
+        const sideRu = pos.side === 'long' ? 'ЛОНГ' : 'ШОРТ';
+        const sideIcon = pos.side === 'long' ? '🟢' : '🔴';
+        const oldSL = pos.stopLoss;
+
+        let profit = 0;
         if (pos.side === 'long') {
-          const profit = currentPrice - pos.entry;
-          if (profit >= risk) {
-            // 1R достигнут — переносим SL в безубыток
-            logger.info(`${pair}: 1R достигнут (${profit.toFixed(2)} >= ${risk.toFixed(2)}) — SL → безубыток ${pos.entry}`);
-            pos.stopLoss = pos.entry;
-            pos._breakevenMoved = true;
-
-            // Обновляем SL на бирже
-            await this._updateStopLossOnExchange(pair, pos);
-
-            await this.notifier.sendMessage(
-              `🔒 <b>Безубыток</b>\n${pair} ЛОНГ\nSL перенесён на вход: <code>${pos.entry}</code>`
-            );
-          }
+          profit = currentPrice - pos.entry;
         } else {
-          const profit = pos.entry - currentPrice;
-          if (profit >= risk) {
-            logger.info(`${pair}: 1R достигнут (${profit.toFixed(2)} >= ${risk.toFixed(2)}) — SL → безубыток ${pos.entry}`);
-            pos.stopLoss = pos.entry;
-            pos._breakevenMoved = true;
+          profit = pos.entry - currentPrice;
+        }
 
-            await this._updateStopLossOnExchange(pair, pos);
+        const profitR = profit / risk; // сколько R пройдено
 
-            await this.notifier.sendMessage(
-              `🔒 <b>Безубыток</b>\n${pair} ШОРТ\nSL перенесён на вход: <code>${pos.entry}</code>`
-            );
-          }
+        if (profit >= risk) {
+          // 1R достигнут — переносим SL в безубыток
+          pos.stopLoss = pos.entry;
+          pos._breakevenMoved = true;
+          pos._breakevenMovedAt = new Date().toISOString();
+
+          // Обновляем SL на бирже через setTradingStop
+          await this._updateStopLossOnExchange(pair, pos);
+
+          const logMsg =
+            `БЕЗУБЫТОК ${pair} ${sideRu}: 1R достигнут | ` +
+            `цена=${currentPrice} | вход=${pos.entry} | ` +
+            `profit=${profit.toFixed(2)} (${profitR.toFixed(1)}R) | ` +
+            `SL ${oldSL} → ${pos.entry} | TP=${pos.takeProfit}`;
+          logger.info(logMsg);
+
+          await this.notifier.sendMessage(
+            `🔒 <b>Безубыток</b>\n` +
+            `${sideIcon} <b>${sideRu}</b> ${pair}\n` +
+            `━━━━━━━━━━━━━━━━━━\n` +
+            `Цена сейчас: <code>${currentPrice}</code>\n` +
+            `Вход: <code>${pos.entry}</code>\n` +
+            `Прибыль: <code>${profit.toFixed(2)} (${profitR.toFixed(1)}R)</code>\n` +
+            `SL: <code>${oldSL}</code> → <code>${pos.entry}</code>\n` +
+            `TP: <code>${pos.takeProfit}</code>\n\n` +
+            `Позиция защищена — стоп на уровне входа`
+          );
+
+          await this.webhook.pushToN8n('breakeven_moved', {
+            pair, side: pos.side, entry: pos.entry,
+            currentPrice, profit: profit.toFixed(2), profitR: profitR.toFixed(1),
+            oldSL, newSL: pos.entry,
+          });
         }
       } catch (err) {
         logger.error(`_checkBreakeven ${pair}: ${err.message}`);
@@ -802,10 +942,25 @@ class TradingBot {
 
     const validation = this.riskManager.validateOrder(order, pair);
     if (!validation.valid) {
-      logger.warn(`${pair}: ордер отклонён — ${validation.errors.join('; ')}`);
+      const reason = validation.errors.join('; ');
+      logger.info(`ПРОПУСК ${pair}: ордер отклонён риск-менеджером — ${reason}`);
       await this.webhook.pushToN8n('order_rejected', { signal: entrySignal, errors: validation.errors });
       return;
     }
+
+    // ── Логирование параметров ордера (Раздел 10 Герчика) ──
+    const levelData = entrySignal._levelData;
+    logger.info(
+      `ОРДЕР ${pair} ${entrySignal.signal.toUpperCase()} | ` +
+      `паттерн: ${entrySignal.typeRu} | ` +
+      `уровень: ${levelData ? `${levelData.price.toFixed(2)} (${levelData.classification}, сила ${levelData.strength})` : '?'} | ` +
+      `entry: ${entrySignal.entry} | SL: ${entrySignal.stopLoss} (Stop Market) | TP: ${entrySignal.takeProfit} (Limit) | ` +
+      `R:R: 1:${entrySignal.riskRewardRatio} | ` +
+      `размер: ${sizing.size} | риск: ${sizing.riskAmount} USDT (${sizing.riskPct}%) | ` +
+      `PostOnly: да | 4H тренд: ${entrySignal._4hTrend || '?'} | подход: ${entrySignal._4hApproach || '?'}` +
+      (entrySignal._reduce ? ' | РАЗМЕР x0.5 (противоречие 4H)' : '') +
+      (entrySignal._aiConfidence ? ` | AI: ${entrySignal._aiConfidence}%` : '')
+    );
 
     // ── Исполнение: Limit PostOnly ──
     try {
@@ -825,11 +980,17 @@ class TradingBot {
         entry: entrySignal.entry,
         stopLoss: entrySignal.stopLoss,
         takeProfit: entrySignal.takeProfit,
+        _originalSL: entrySignal.stopLoss, // оригинальный SL (до безубытка)
         size: sizing.size,
         orderId: result.id,
         entryReason: entrySignal.reason,
         openedAt: new Date().toISOString(),
         _breakevenMoved: false,
+        // Данные уровня для логирования при закрытии
+        _levelPrice: levelData ? levelData.price : null,
+        _levelClassification: levelData ? levelData.classification : null,
+        _levelStrength: levelData ? levelData.strength : null,
+        _entryPattern: entrySignal.type || null,
       };
 
       // Limit ордер — ждём исполнения
