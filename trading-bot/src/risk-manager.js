@@ -57,34 +57,43 @@ class RiskManager {
   }
 
   /**
-   * Validate an order before execution.
+   * Валидация ордера перед исполнением.
+   * @param {string} pair — торговая пара (для проверки: макс 1 позиция на инструмент)
    */
-  validateOrder(order) {
+  validateOrder(order, pair) {
     const errors = [];
 
-    if (!order.entry || order.entry <= 0) errors.push('Missing or invalid entry price');
-    if (!order.stopLoss || order.stopLoss <= 0) errors.push('Missing stop-loss');
-    if (!order.takeProfit || order.takeProfit <= 0) errors.push('Missing take-profit');
-    if (!order.size || order.size <= 0) errors.push('Missing or invalid position size');
+    if (!order.entry || order.entry <= 0) errors.push('Нет цены входа');
+    if (!order.stopLoss || order.stopLoss <= 0) errors.push('Нет стоп-лосса');
+    if (!order.takeProfit || order.takeProfit <= 0) errors.push('Нет тейк-профита');
+    if (!order.size || order.size <= 0) errors.push('Нет размера позиции');
 
     if (order.side === 'long') {
-      if (order.stopLoss >= order.entry) errors.push('Stop-loss must be below entry for long');
-      if (order.takeProfit <= order.entry) errors.push('Take-profit must be above entry for long');
+      if (order.stopLoss >= order.entry) errors.push('SL должен быть ниже входа для лонга');
+      if (order.takeProfit <= order.entry) errors.push('TP должен быть выше входа для лонга');
     } else if (order.side === 'short') {
-      if (order.stopLoss <= order.entry) errors.push('Stop-loss must be above entry for short');
-      if (order.takeProfit >= order.entry) errors.push('Take-profit must be below entry for short');
+      if (order.stopLoss <= order.entry) errors.push('SL должен быть выше входа для шорта');
+      if (order.takeProfit >= order.entry) errors.push('TP должен быть ниже входа для шорта');
     }
 
-    // Check R:R ratio
+    // Проверка R:R
     const risk = Math.abs(order.entry - order.stopLoss);
     const reward = Math.abs(order.takeProfit - order.entry);
     if (risk > 0 && reward / risk < this.minRR) {
-      errors.push(`R:R ratio ${(reward / risk).toFixed(2)} is below minimum ${this.minRR}`);
+      errors.push(`R:R ${(reward / risk).toFixed(2)} ниже минимума ${this.minRR}`);
     }
 
-    // Check concurrent positions
+    // Макс 1 позиция на инструмент (Герчик)
+    if (pair) {
+      const hasPosition = this.openPositions.some((p) => p.id === pair);
+      if (hasPosition) {
+        errors.push(`Уже есть позиция по ${pair} (макс 1 на инструмент)`);
+      }
+    }
+
+    // Общий лимит позиций
     if (this.openPositions.length >= this.maxConcurrent) {
-      errors.push(`Max concurrent positions (${this.maxConcurrent}) reached`);
+      errors.push(`Достигнут лимит позиций (${this.maxConcurrent})`);
     }
 
     return { valid: errors.length === 0, errors };

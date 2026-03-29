@@ -435,7 +435,14 @@ class TelegramNotifier {
   async notifyTrade(signal) {
     const icon = signal.signal === 'long' ? '🟢' : signal.signal === 'short' ? '🔴' : '⚪';
     const sideRu = signal.signal === 'long' ? 'ЛОНГ' : 'ШОРТ';
-    const typeRu = signal.type === 'breakout' ? 'Пробой' : signal.type === 'bounce' ? 'Отскок' : (signal.type || '');
+    const typeMap = {
+      'false_breakout': 'Ложный пробой',
+      'bounce': 'Отскок',
+      'engulfing': 'Поглощение',
+      'base': 'База (проторговка)',
+      'breakout': 'Пробой',
+    };
+    const typeRu = signal.typeRu || typeMap[signal.type] || (signal.type || '');
 
     let msg =
       `${icon} <b>ОТКРЫТА ПОЗИЦИЯ: ${sideRu}</b>\n` +

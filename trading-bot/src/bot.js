@@ -20,11 +20,17 @@ const TradeStore = require('./trade-store');
 const logger = require('./logger');
 
 const PAIRS = ['BTC/USDT', 'ETH/USDT', 'SOL/USDT', 'BNB/USDT', 'XRP/USDT'];
-const TIMEFRAMES = (process.env.TIMEFRAMES || '15m,1h,4h').split(',').map((t) => t.trim());
+// Герчик: 1D — уровни, 4H — подтверждение тренда, 5m — вход
+const TF_LEVELS = '1d';     // таймфрейм для построения уровней
+const TF_CONFIRM = '4h';    // таймфрейм для подтверждения тренда
+const TF_ENTRY = '5m';      // таймфрейм для паттернов входа
 const POLL_INTERVAL_MS = parseInt(process.env.POLL_INTERVAL_MS, 10) || 60000;
 const VOLUME_THRESHOLD = parseFloat(process.env.VOLUME_THRESHOLD) || 1000000;
 const AI_FILTER_ENABLED = process.env.AI_FILTER_ENABLED !== 'false';
 const AI_MIN_CONFIDENCE = parseInt(process.env.AI_MIN_CONFIDENCE, 10) || 60;
+const ORDER_SAFETY_TTL_MS = 30 * 60 * 1000; // страховочный таймаут 30 мин
+const MAX_ORDER_ATTEMPTS = 2;                // макс попыток на один сетап
+const BREAKEVEN_ENABLED = true;              // перенос SL в безубыток после 1R
 
 class TradingBot {
   constructor() {
@@ -41,19 +47,21 @@ class TradingBot {
     this.tradeStore = new TradeStore();
     this.running = false;
     this.paused = false;
-    this.positions = new Map(); // pair:tf -> position info
-    this._pendingSignals = new Map();
-    this._pendingOrders = new Map(); // orderId -> { pair, posKey, position, createdAt }
+    this.positions = new Map(); // pair -> position info (макс 1 на инструмент)
+    this._pendingOrders = new Map(); // orderId -> { pair, position, signal, sizing, createdAt, attempts, level, direction }
+    this._orderAttempts = new Map(); // pair -> количество попыток на текущий сетап
+    this._dailyLevels = new Map();  // pair -> массив уровней с 1D
+    this._lastLevelUpdate = 0;      // timestamp последнего обновления уровней
   }
 
   async start() {
     logger.info('=== Gerchik Levels Trading Bot starting ===');
-    logger.info(`Pairs: ${PAIRS.join(', ')}`);
-    logger.info(`Timeframes: ${TIMEFRAMES.join(', ')}`);
-    logger.info(`Poll interval: ${POLL_INTERVAL_MS}ms`);
-    logger.info(`Volume threshold: ${VOLUME_THRESHOLD}`);
-    logger.info(`AI filter: ${AI_FILTER_ENABLED && this.aiFilter.enabled ? 'ON' : 'OFF'}`);
-    logger.info(`n8n webhook: ${this.webhook.n8nWebhookUrl || 'not configured'}`);
+    logger.info(`Пары: ${PAIRS.join(', ')}`);
+    logger.info(`Таймфреймы: ${TF_LEVELS} (уровни), ${TF_CONFIRM} (тренд), ${TF_ENTRY} (вход)`);
+    logger.info(`Интервал: ${POLL_INTERVAL_MS}мс`);
+    logger.info(`Мин объём: ${VOLUME_THRESHOLD}`);
+    logger.info(`AI фильтр: ${AI_FILTER_ENABLED && this.aiFilter.enabled ? 'ВКЛ' : 'ВЫКЛ'}`);
+    logger.info(`n8n webhook: ${this.webhook.n8nWebhookUrl || 'не настроен'}`);
 
     this.running = true;
 
@@ -74,20 +82,20 @@ class TradingBot {
 
     try {
       await this.notifier.sendMessage(
-        '🤖 <b>Бот запущен</b>\n' +
+        '🤖 <b>Бот запущен (Герчик)</b>\n' +
         `Пары: ${PAIRS.join(', ')}\n` +
-        `ТФ: ${TIMEFRAMES.join(', ')}\n` +
+        `ТФ: ${TF_LEVELS} уровни | ${TF_CONFIRM} тренд | ${TF_ENTRY} вход\n` +
         `AI: ${AI_FILTER_ENABLED && this.aiFilter.enabled ? 'ВКЛ' : 'ВЫКЛ'}\n` +
-        `Риск: ${this.riskManager.riskPct}%`
+        `Риск: ${this.riskManager.riskPct}% | Макс 1 позиция на инструмент`
       );
     } catch (e) {
-      logger.warn(`Startup Telegram notification failed: ${e.message}`);
+      logger.warn(`Ошибка Telegram при старте: ${e.message}`);
     }
 
     // Notify n8n
     await this.webhook.pushToN8n('bot_started', {
       pairs: PAIRS,
-      timeframes: TIMEFRAMES,
+      timeframes: [TF_LEVELS, TF_CONFIRM, TF_ENTRY],
       riskPct: this.riskManager.riskPct,
     });
 
@@ -141,7 +149,7 @@ class TradingBot {
         const side = pos.side === 'long' ? 'long' : 'short';
         // Use absolute value — shorts have negative contracts
         const size = Math.abs(pos.contracts || parseFloat(pos.info?.size || '0'));
-        const posKey = `${pair}:synced`;
+        const posKey = pair; // макс 1 позиция на инструмент
 
         const position = {
           id: posKey,
@@ -175,19 +183,18 @@ class TradingBot {
   }
 
   /**
-   * Check pending limit orders: fill → register position, timeout → cancel.
+   * Проверка лимитных ордеров по методологии Герчика.
+   * Отмена по условиям: пробой уровня, смена контекста, страховочный таймаут 30 мин.
    */
   async _checkPendingOrders() {
-    const LIMIT_ORDER_TIMEOUT = 5 * 60 * 1000; // 5 minutes
-
     for (const [orderId, pending] of [...this._pendingOrders]) {
       try {
         const order = await this.exchange.fetchOrder(orderId, pending.pair);
 
-        if (order.status === 'closed' || order.filled > 0) {
-          // Order filled — register position
+        // === ИСПОЛНЕН ===
+        if (order.status === 'closed') {
           this._pendingOrders.delete(orderId);
-          this.positions.set(pending.posKey, pending.position);
+          this.positions.set(pending.pair, pending.position);
           this.riskManager.addPosition(pending.position);
 
           await this.notifier.notifyTrade({
@@ -196,26 +203,99 @@ class TradingBot {
             riskAmount: pending.sizing.riskAmount,
           });
           await this.webhook.pushToN8n('trade_opened', pending.position);
-          logger.info(`Limit order filled: ${orderId} — ${pending.pair}`);
+          logger.info(`Ордер исполнен: ${orderId} — ${pending.pair}`);
+          continue;
+        }
 
-        } else if (order.status === 'canceled') {
-          // Already canceled
-          this._pendingOrders.delete(orderId);
-          logger.info(`Limit order was canceled: ${orderId}`);
+        // === ЧАСТИЧНОЕ ИСПОЛНЕНИЕ ===
+        if (order.filled > 0 && order.remaining > 0) {
+          const fillRatio = order.filled / (order.filled + order.remaining);
+          if (fillRatio >= 0.5) {
+            // > 50% — торгуем исполненным объёмом, остаток отменяем
+            this._pendingOrders.delete(orderId);
+            await this.exchange.cancelOrder(orderId, pending.pair);
 
-        } else if (Date.now() - pending.createdAt > LIMIT_ORDER_TIMEOUT) {
-          // Timeout — cancel order
+            pending.position.size = order.filled;
+            this.positions.set(pending.pair, pending.position);
+            this.riskManager.addPosition(pending.position);
+
+            pending.sizing.size = order.filled;
+            await this.notifier.notifyTrade({
+              ...pending.signal,
+              positionSize: order.filled,
+              riskAmount: pending.sizing.riskAmount,
+            });
+            logger.info(`Ордер частично исполнен (${(fillRatio * 100).toFixed(0)}%): ${orderId} — торгуем ${order.filled}`);
+            continue;
+          }
+          // < 50% — будет закрыт ниже при отмене
+        }
+
+        // === УЖЕ ОТМЕНЁН ===
+        if (order.status === 'canceled') {
           this._pendingOrders.delete(orderId);
-          await this.exchange.cancelOrder(orderId, pending.pair);
+          logger.info(`Ордер был отменён: ${orderId}`);
+          continue;
+        }
+
+        // === ПРОВЕРКА УСЛОВИЙ ОТМЕНЫ ПО ГЕРЧИКУ ===
+        let cancelReason = null;
+
+        // 1. Пробой уровня — главный триггер
+        if (pending.level && pending.direction) {
+          try {
+            const candles5m = await this.exchange.fetchCandles(pending.pair, TF_ENTRY, 3);
+            if (candles5m && candles5m.length > 0) {
+              const lastCandle = candles5m[candles5m.length - 1];
+              if (this.strategy.isLevelBroken(lastCandle, pending.level, pending.direction)) {
+                cancelReason = `Пробой уровня ${pending.level.price.toFixed(2)} — уровень сломан`;
+              }
+            }
+          } catch (e) {
+            logger.warn(`Ошибка проверки пробоя для ${pending.pair}: ${e.message}`);
+          }
+        }
+
+        // 2. Страховочный таймаут — 30 минут
+        if (!cancelReason && Date.now() - pending.createdAt > ORDER_SAFETY_TTL_MS) {
+          cancelReason = `Страховочный таймаут 30 мин — цена в рейндже`;
+        }
+
+        // === ОТМЕНА ===
+        if (cancelReason) {
+          this._pendingOrders.delete(orderId);
+
+          // Если частично исполнен < 50% — закрываем рыночным
+          if (order.filled > 0) {
+            const fillRatio = order.filled / (order.filled + order.remaining);
+            if (fillRatio < 0.5) {
+              try {
+                await this.exchange.cancelOrder(orderId, pending.pair);
+                await this.exchange.closePosition(pending.pair, pending.direction, order.filled);
+                logger.info(`Частичное исполнение <50% — закрыто рыночным: ${order.filled}`);
+              } catch (e) {
+                logger.error(`Ошибка закрытия частичной позиции: ${e.message}`);
+              }
+            }
+          } else {
+            await this.exchange.cancelOrder(orderId, pending.pair);
+          }
+
+          // Увеличиваем счётчик попыток
+          if (pending.attemptKey) {
+            const attempts = (this._orderAttempts.get(pending.attemptKey) || 0) + 1;
+            this._orderAttempts.set(pending.attemptKey, attempts);
+          }
+
           await this.notifier.sendMessage(
-            `⏰ <b>Лимитный ордер отменён</b>\n` +
-            `${pending.pair} — цена не дошла до уровня за 5 мин`
+            `⏰ <b>Ордер отменён</b>\n` +
+            `${pending.pair} ${pending.direction === 'long' ? 'ЛОНГ' : 'ШОРТ'}\n` +
+            `Причина: ${cancelReason}`
           );
-          logger.info(`Limit order timed out and canceled: ${orderId}`);
+          logger.info(`Ордер отменён: ${orderId} — ${cancelReason}`);
         }
       } catch (err) {
-        logger.error(`_checkPendingOrders error for ${orderId}: ${err.message}`);
-        // If order not found, remove from tracking
+        logger.error(`_checkPendingOrders ошибка ${orderId}: ${err.message}`);
         if (err.message.includes('not found') || err.message.includes('does not exist')) {
           this._pendingOrders.delete(orderId);
         }
@@ -316,25 +396,35 @@ class TradingBot {
 
   async _tick() {
     const balance = await this.exchange.fetchBalance();
-    logger.info(`Balance: ${balance.free} USDT (total: ${balance.total})`);
+    logger.info(`Баланс: ${balance.free} USDT свободно (всего: ${balance.total})`);
 
-    // Check pending limit orders (fill or cancel after timeout)
+    // Проверка лимитных ордеров (исполнение / отмена по условиям Герчика)
     await this._checkPendingOrders();
 
-    // Check if any tracked positions were closed on exchange (by SL/TP)
+    // Детекция закрытых позиций на бирже (SL/TP)
     await this._detectClosedPositions();
 
+    // Перенос SL в безубыток после 1R
+    if (BREAKEVEN_ENABLED) {
+      await this._checkBreakeven();
+    }
+
+    // Обновление дневных уровней (раз в 4 часа — не чаще)
+    const now = Date.now();
+    if (now - this._lastLevelUpdate > 4 * 60 * 60 * 1000) {
+      await this._updateDailyLevels();
+      this._lastLevelUpdate = now;
+    }
+
+    // Мультитаймфреймовый анализ по каждой паре
     for (const pair of PAIRS) {
-      for (const tf of TIMEFRAMES) {
-        try {
-          await this._processPair(pair, tf, balance);
-        } catch (err) {
-          logger.error(`Error processing ${pair} ${tf}: ${err.message}`);
-        }
+      try {
+        await this._processPairGerchik(pair, balance);
+      } catch (err) {
+        logger.error(`Ошибка ${pair}: ${err.message}`);
       }
     }
 
-    // Send periodic status to n8n
     await this.webhook.pushToN8n('tick_complete', {
       balance,
       openPositions: this.positions.size,
@@ -342,171 +432,281 @@ class TradingBot {
     });
   }
 
-  async _processPair(pair, timeframe, balance) {
-    // Fetch candles
-    const candles = await this.exchange.fetchCandles(pair, timeframe, 200);
-    if (!candles || candles.length < 50) {
-      logger.debug(`${pair} ${timeframe}: not enough candles`);
+  /**
+   * Обновить дневные уровни для всех пар.
+   */
+  async _updateDailyLevels() {
+    for (const pair of PAIRS) {
+      try {
+        const dailyCandles = await this.exchange.fetchCandles(pair, TF_LEVELS, 120);
+        if (!dailyCandles || dailyCandles.length < 30) {
+          logger.warn(`${pair}: недостаточно дневных свечей (${dailyCandles?.length || 0})`);
+          continue;
+        }
+
+        const levels = this.strategy.findLevels(dailyCandles);
+        this._dailyLevels.set(pair, { levels, candles: dailyCandles });
+
+        // Логирование найденных уровней
+        for (const l of levels) {
+          logger.info(
+            `${pair} уровень: ${l.price.toFixed(2)} | ${l.classification} | ` +
+            `сила: ${l.strength} | касаний: ${l.touches} | ` +
+            `тип: ${l.type}${l.isMirror ? ' (зеркальный)' : ''}${l.hasFalseBreakout ? ' (лож.пробой)' : ''}`
+          );
+        }
+
+        if (levels.length === 0) {
+          logger.info(`${pair}: уровни не найдены на 1D`);
+        }
+      } catch (err) {
+        logger.error(`${pair}: ошибка обновления уровней: ${err.message}`);
+      }
+    }
+  }
+
+  /**
+   * Мультитаймфреймовый анализ одной пары по методологии Герчика.
+   * 1D → уровни, 4H → тренд и поведение, 5m → паттерн входа.
+   */
+  async _processPairGerchik(pair, balance) {
+    // 1. Проверяем: есть ли уже позиция по этому инструменту (макс 1)
+    if (this.positions.has(pair)) {
+      logger.debug(`${pair}: уже есть открытая позиция — пропуск`);
       return;
     }
 
-    // Volume filter
+    // 2. Проверяем: есть ли активный лимитный ордер по этой паре
+    for (const [, pending] of this._pendingOrders) {
+      if (pending.pair === pair) {
+        logger.debug(`${pair}: есть ожидающий ордер — пропуск`);
+        return;
+      }
+    }
+
+    // 3. Получаем дневные уровни (кэшированные)
+    const dailyData = this._dailyLevels.get(pair);
+    if (!dailyData || !dailyData.levels || dailyData.levels.length === 0) {
+      logger.debug(`${pair}: нет уровней на 1D — пропуск`);
+      return;
+    }
+
+    const { levels: dailyLevels, candles: dailyCandles } = dailyData;
+
+    // 4. Фильтр объёма
     const ticker = await this.exchange.fetchTicker(pair);
     if (ticker.quoteVolume && ticker.quoteVolume < VOLUME_THRESHOLD) {
-      logger.debug(`${pair}: daily volume ${ticker.quoteVolume} below threshold ${VOLUME_THRESHOLD}`);
+      logger.debug(`${pair}: объём ${ticker.quoteVolume} ниже порога ${VOLUME_THRESHOLD}`);
       return;
     }
 
-    // Find levels
-    const levels = this.strategy._findLevels(candles);
-    const atr = this.strategy._calculateATR(candles, 14);
-
-    // Check existing position for exit
-    const posKey = `${pair}:${timeframe}`;
-    const existingPos = this.positions.get(posKey);
-
-    if (existingPos) {
-      await this._checkExit(posKey, pair, timeframe, candles, existingPos, levels, atr);
+    // 5. Получаем 4H свечи для подтверждения тренда
+    const candles4H = await this.exchange.fetchCandles(pair, TF_CONFIRM, 50);
+    if (!candles4H || candles4H.length < 20) {
+      logger.debug(`${pair}: недостаточно 4H свечей`);
       return;
     }
 
-    // Check entry
-    await this._checkEntry(posKey, pair, timeframe, candles, levels, atr, balance);
+    // 6. Получаем 5m свечи для поиска паттерна входа
+    const candles5m = await this.exchange.fetchCandles(pair, TF_ENTRY, 50);
+    if (!candles5m || candles5m.length < 10) {
+      logger.debug(`${pair}: недостаточно 5m свечей`);
+      return;
+    }
+
+    const currentPrice = candles5m[candles5m.length - 1].close;
+
+    // 7. Ищем ближайший активный уровень к текущей цене
+    for (const level of dailyLevels) {
+      // Фильтр: изношенный уровень (4+ касаний за последние дни)
+      if (this.strategy.isLevelWornOut(level, dailyCandles.slice(-10))) {
+        logger.debug(`${pair}: уровень ${level.price.toFixed(2)} изношен (4+ касаний) — пропуск`);
+        continue;
+      }
+
+      // Определяем направление: цена выше уровня — лонг (отскок от поддержки),
+      // цена ниже — шорт (отскок от сопротивления)
+      let direction = null;
+      const distPct = (currentPrice - level.price) / level.price;
+
+      if (level.type === 'support' || level.type === 'dual') {
+        if (distPct >= -0.005 && distPct <= 0.01) direction = 'long';
+      }
+      if (level.type === 'resistance' || level.type === 'dual') {
+        if (distPct <= 0.005 && distPct >= -0.01) direction = 'short';
+      }
+
+      if (!direction) continue;
+
+      // 8. Проверка тренда на 4H
+      const confirmation = this.strategy.check4HConfirmation(candles4H, direction);
+      if (!confirmation.confirmed && level.strength < 6) {
+        // Слабый уровень + противоречие на 4H — пропуск
+        logger.info(`${pair}: 4H тренд противоречит ${direction} при слабом уровне ${level.price.toFixed(2)} — пропуск`);
+        continue;
+      }
+
+      // 9. Анализ поведения на 4H при подходе к уровню
+      const approach = this.strategy.analyze4HApproach(candles4H, level);
+      logger.debug(`${pair}: подход к уровню на 4H: ${approach.approach}`);
+
+      // 10. Поиск паттерна входа на 5m
+      const signal = this.strategy.findEntryPattern(candles5m, level, direction, dailyLevels);
+
+      if (!signal) continue;
+
+      // Проверка макс попыток на этот сетап
+      const attemptKey = `${pair}:${level.price.toFixed(2)}:${direction}`;
+      const attempts = this._orderAttempts.get(attemptKey) || 0;
+      if (attempts >= MAX_ORDER_ATTEMPTS) {
+        logger.info(`${pair}: исчерпаны попытки (${attempts}/${MAX_ORDER_ATTEMPTS}) для уровня ${level.price.toFixed(2)} — пропуск`);
+        continue;
+      }
+
+      // Уменьшаем размер вдвое при противоречии на 4H
+      signal._reduce = confirmation.reduce;
+      signal._4hTrend = this.strategy.detectTrend4H(candles4H);
+      signal._4hApproach = approach.approach;
+      signal._levelData = level;
+      signal.pair = pair;
+      signal.timeframe = TF_ENTRY;
+
+      logger.info(
+        `${pair}: СИГНАЛ ${direction.toUpperCase()} | ${signal.typeRu} | ` +
+        `уровень ${level.price.toFixed(2)} (${level.classification}, сила ${level.strength}) | ` +
+        `4H тренд: ${signal._4hTrend} | подход: ${signal._4hApproach}`
+      );
+
+      // Переходим к открытию позиции
+      await this._checkEntry(pair, signal, dailyLevels, balance, attemptKey);
+      return; // один сигнал за тик на пару
+    }
   }
 
-  async _checkExit(posKey, pair, timeframe, candles, existingPos, levels, atr) {
-    const exitSignal = this.strategy.exitSignal(candles, existingPos, levels, atr);
-    if (!exitSignal) return;
+  /**
+   * Перенос SL в безубыток после прохождения 1R в прибыль.
+   */
+  async _checkBreakeven() {
+    for (const [pair, pos] of this.positions) {
+      if (pos._breakevenMoved) continue; // уже перенесён
 
-    try {
-      await this.exchange.closePosition(pair, existingPos.side, existingPos.size);
-      this.riskManager.removePosition(posKey);
-      this.positions.delete(posKey);
+      try {
+        const ticker = await this.exchange.fetchTicker(pair);
+        const currentPrice = ticker.last || ticker.close;
+        if (!currentPrice) continue;
 
-      const currentPrice = exitSignal.price || candles[candles.length - 1].close;
-      const pnl = existingPos.side === 'long'
-        ? (currentPrice - existingPos.entry) * existingPos.size
-        : (existingPos.entry - currentPrice) * existingPos.size;
-      const duration = Date.now() - new Date(existingPos.openedAt).getTime();
-      const durationMin = Math.round(duration / 60000);
+        const risk = Math.abs(pos.entry - pos.stopLoss);
 
-      // Store completed trade
-      const trade = {
-        pair,
-        timeframe,
-        side: existingPos.side,
-        entry: existingPos.entry,
-        exitPrice: currentPrice,
-        stopLoss: existingPos.stopLoss,
-        takeProfit: existingPos.takeProfit,
-        size: existingPos.size,
-        pnl: parseFloat(pnl.toFixed(2)),
-        entryReason: existingPos.entryReason || '',
-        exitReason: exitSignal.reason,
-        duration: `${durationMin}m`,
-        closedAt: new Date().toISOString(),
-      };
-      this.tradeStore.saveTrade(trade);
+        if (pos.side === 'long') {
+          const profit = currentPrice - pos.entry;
+          if (profit >= risk) {
+            // 1R достигнут — переносим SL в безубыток
+            logger.info(`${pair}: 1R достигнут (${profit.toFixed(2)} >= ${risk.toFixed(2)}) — SL → безубыток ${pos.entry}`);
+            pos.stopLoss = pos.entry;
+            pos._breakevenMoved = true;
 
-      // Notify
-      await this.notifier.notifyClose({ ...exitSignal, pair, pnl: trade.pnl });
-      await this.webhook.pushToN8n('trade_closed', trade);
-      logger.info(`${pair} ${timeframe}: position closed — ${exitSignal.reason} (PnL: ${trade.pnl})`);
+            // Обновляем SL на бирже
+            await this._updateStopLossOnExchange(pair, pos);
 
-      // AI post-trade analysis
-      if (AI_FILTER_ENABLED && this.aiFilter.enabled) {
-        const analysis = await this.aiFilter.analyzeTrade(trade);
-        if (analysis) {
-          this.tradeStore.saveAnalysis(trade.closedAt, analysis);
-          const analysisMsg =
-            `📊 <b>Анализ сделки</b> ${pair}\n` +
-            `Оценка: ${analysis.grade}\n` +
-            `Уроки: ${(analysis.lessons || []).join(', ')}\n` +
-            `Совет: ${analysis.improvement || ''}`;
-          await this.notifier.sendMessage(analysisMsg);
-          await this.webhook.pushToN8n('trade_analysis', { trade, analysis });
+            await this.notifier.sendMessage(
+              `🔒 <b>Безубыток</b>\n${pair} ЛОНГ\nSL перенесён на вход: <code>${pos.entry}</code>`
+            );
+          }
+        } else {
+          const profit = pos.entry - currentPrice;
+          if (profit >= risk) {
+            logger.info(`${pair}: 1R достигнут (${profit.toFixed(2)} >= ${risk.toFixed(2)}) — SL → безубыток ${pos.entry}`);
+            pos.stopLoss = pos.entry;
+            pos._breakevenMoved = true;
+
+            await this._updateStopLossOnExchange(pair, pos);
+
+            await this.notifier.sendMessage(
+              `🔒 <b>Безубыток</b>\n${pair} ШОРТ\nSL перенесён на вход: <code>${pos.entry}</code>`
+            );
+          }
         }
+      } catch (err) {
+        logger.error(`_checkBreakeven ${pair}: ${err.message}`);
       }
-    } catch (err) {
-      logger.error(`Failed to close position ${pair}: ${err.message}`);
-      await this.notifier.notifyError(err);
     }
   }
 
-  async _checkEntry(posKey, pair, timeframe, candles, levels, atr, balance) {
-    const entrySignal = this.strategy.entrySignal(candles, levels, atr, {
-      volumeThreshold: VOLUME_THRESHOLD,
-      balance: balance.free,
-      riskPct: this.riskManager.riskPct,
-    });
+  /**
+   * Обновить стоп-лосс на бирже (Bybit).
+   */
+  async _updateStopLossOnExchange(pair, pos) {
+    try {
+      const symbol = this.exchange._toLinear(pair);
+      await this.exchange.exchange.editOrder(
+        pos.orderId, symbol, 'market', pos.side === 'long' ? 'buy' : 'sell', pos.size,
+        undefined, { stopLoss: { triggerPrice: pos.stopLoss, type: 'market' } }
+      );
+    } catch (err) {
+      // Fallback: Bybit может не поддерживать editOrder для SL — логируем
+      logger.warn(`Не удалось обновить SL на бирже для ${pair}: ${err.message}`);
+    }
+  }
 
-    if (!entrySignal) return;
-
-    entrySignal.pair = pair;
-    entrySignal.timeframe = timeframe;
-
-    // ── AI Filter ──
+  /**
+   * Открытие позиции по сигналу Герчика.
+   * Limit PostOnly ордер, 1-2 тика от зоны.
+   */
+  async _checkEntry(pair, entrySignal, dailyLevels, balance, attemptKey) {
+    // ── AI фильтр ──
     if (AI_FILTER_ENABLED && this.aiFilter.enabled) {
-      // Detect market regime first
-      const regime = await this.aiFilter.detectMarketRegime(pair, candles);
-      logger.info(`${pair} market regime: ${regime.regime} (${regime.strength || '?'}%) — ${regime.suggestion}`);
+      try {
+        const candles5m = await this.exchange.fetchCandles(pair, TF_ENTRY, 50);
 
-      // Skip ranging market for breakout signals
-      if (regime.regime === 'ranging' && entrySignal.type === 'breakout') {
-        logger.info(`${pair}: skipping breakout in ranging market`);
-        await this.webhook.pushToN8n('signal_skipped', {
+        // Режим рынка
+        const regime = await this.aiFilter.detectMarketRegime(pair, candles5m || []);
+        logger.info(`${pair} режим рынка: ${regime.regime} (${regime.strength || '?'}%) — ${regime.suggestion}`);
+
+        // Валидация сигнала AI
+        const aiResult = await this.aiFilter.validateSignal(entrySignal, candles5m || [], dailyLevels);
+
+        await this.webhook.pushToN8n('signal_pending', {
+          pair,
           signal: entrySignal,
-          reason: 'Breakout in ranging market',
+          aiResult,
           regime,
+          levels: dailyLevels.slice(0, 5),
         });
-        return;
+
+        if (!aiResult.approved || aiResult.confidence < AI_MIN_CONFIDENCE) {
+          logger.info(`${pair}: AI отклонил (${aiResult.confidence}%) — ${aiResult.reason}`);
+          await this.notifier.sendMessage(
+            `🤖 <b>AI ОТКЛОНИЛ</b> ${entrySignal.signal.toUpperCase()} ${pair}\n` +
+            `Уверенность: ${aiResult.confidence}%\n` +
+            `Причина: ${aiResult.reason}`
+          );
+          return;
+        }
+
+        logger.info(`${pair}: AI одобрил (${aiResult.confidence}%) — ${aiResult.reason}`);
+        entrySignal._aiReason = aiResult.reason;
+        entrySignal._aiConfidence = aiResult.confidence;
+        entrySignal._regime = regime;
+      } catch (aiErr) {
+        logger.warn(`${pair}: AI фильтр ошибка: ${aiErr.message} — продолжаем без AI`);
       }
-
-      // Validate signal with AI
-      const aiResult = await this.aiFilter.validateSignal(entrySignal, candles, levels);
-
-      // Push signal to n8n for external validation too
-      await this.webhook.pushToN8n('signal_pending', {
-        posKey,
-        signal: entrySignal,
-        aiResult,
-        regime,
-        levels: levels.slice(0, 5),
-      });
-
-      if (!aiResult.approved || aiResult.confidence < AI_MIN_CONFIDENCE) {
-        logger.info(`${pair} ${timeframe}: AI rejected signal (${aiResult.confidence}%) — ${aiResult.reason}`);
-        await this.notifier.sendMessage(
-          `🤖 <b>AI ОТКЛОНИЛ</b> ${entrySignal.signal.toUpperCase()} ${pair}\n` +
-          `Уверенность: ${aiResult.confidence}%\n` +
-          `Причина: ${aiResult.reason}`
-        );
-        return;
-      }
-
-      logger.info(`${pair} ${timeframe}: AI approved (${aiResult.confidence}%) — ${aiResult.reason}`);
-
-      // Save AI analysis for trade notification
-      entrySignal._aiReason = aiResult.reason;
-      entrySignal._aiConfidence = aiResult.confidence;
-      entrySignal._regime = regime;
-    } else {
-      // No AI — still push to n8n
-      await this.webhook.pushToN8n('signal_pending', {
-        posKey,
-        signal: entrySignal,
-        aiResult: null,
-        levels: levels.slice(0, 5),
-      });
     }
 
-    // ── Position sizing ──
+    // ── Размер позиции ──
     const sizing = this.riskManager.calculatePositionSize(
       balance.free,
       entrySignal.entry,
       entrySignal.stopLoss
     );
 
+    // Уменьшаем вдвое при противоречии 4H
+    if (entrySignal._reduce) {
+      sizing.size = parseFloat((sizing.size / 2).toFixed(6));
+      sizing.riskAmount = parseFloat((sizing.riskAmount / 2).toFixed(2));
+      logger.info(`${pair}: размер уменьшен вдвое (противоречие 4H) → ${sizing.size}`);
+    }
+
+    // ── Валидация ──
     const order = {
       side: entrySignal.signal,
       entry: entrySignal.entry,
@@ -515,18 +715,14 @@ class TradingBot {
       size: sizing.size,
     };
 
-    // Validate
-    const validation = this.riskManager.validateOrder(order);
+    const validation = this.riskManager.validateOrder(order, pair);
     if (!validation.valid) {
-      logger.warn(`${pair} ${timeframe}: order rejected — ${validation.errors.join('; ')}`);
-      await this.webhook.pushToN8n('order_rejected', {
-        signal: entrySignal,
-        errors: validation.errors,
-      });
+      logger.warn(`${pair}: ордер отклонён — ${validation.errors.join('; ')}`);
+      await this.webhook.pushToN8n('order_rejected', { signal: entrySignal, errors: validation.errors });
       return;
     }
 
-    // ── Execute ──
+    // ── Исполнение: Limit PostOnly ──
     try {
       const result = await this.exchange.placeOrder(
         pair,
@@ -534,11 +730,12 @@ class TradingBot {
         sizing.size,
         entrySignal.stopLoss,
         entrySignal.takeProfit,
-        entrySignal.entry // limit price at level
+        entrySignal.entry, // limit price
+        true // postOnly
       );
 
       const position = {
-        id: posKey,
+        id: pair,
         side: entrySignal.signal,
         entry: entrySignal.entry,
         stopLoss: entrySignal.stopLoss,
@@ -547,30 +744,46 @@ class TradingBot {
         orderId: result.id,
         entryReason: entrySignal.reason,
         openedAt: new Date().toISOString(),
+        _breakevenMoved: false,
       };
 
-      // For limit orders, track as pending until filled
+      // Limit ордер — ждём исполнения
       if (result.status === 'open' || result.type === 'limit') {
         this._pendingOrders.set(result.id, {
           pair,
-          posKey,
           position,
           signal: entrySignal,
           sizing,
           createdAt: Date.now(),
+          attemptKey,
+          level: entrySignal._levelData,
+          direction: entrySignal.signal,
         });
-        logger.info(`Limit order pending: ${result.id} — waiting for fill`);
+
+        const sideRu = entrySignal.signal === 'long' ? 'ЛОНГ' : 'ШОРТ';
+        const levelInfo = entrySignal._levelData;
+
         await this.notifier.sendMessage(
-          `⏳ <b>Лимитный ордер размещён</b>\n` +
-          `${entrySignal.signal === 'long' ? '🟢 ЛОНГ' : '🔴 ШОРТ'} ${pair}\n` +
+          `⏳ <b>Лимитный ордер (PostOnly)</b>\n` +
+          `${entrySignal.signal === 'long' ? '🟢' : '🔴'} <b>${sideRu}</b> ${pair}\n` +
+          `━━━━━━━━━━━━━━━━━━\n` +
           `Цена: <code>${entrySignal.entry}</code>\n` +
-          `Ожидание исполнения (макс 5 мин)`
+          `SL: <code>${entrySignal.stopLoss}</code> | TP: <code>${entrySignal.takeProfit}</code>\n` +
+          `R:R: <code>1:${entrySignal.riskRewardRatio}</code>\n` +
+          `Размер: <code>${sizing.size}</code> | Риск: <code>${sizing.riskAmount} USDT</code>\n\n` +
+          `📐 Уровень: ${levelInfo ? `${levelInfo.price.toFixed(2)} (${this.strategy._classificationRu(levelInfo.classification)}, сила ${levelInfo.strength})` : entrySignal.level}\n` +
+          `Паттерн: <b>${entrySignal.typeRu}</b>\n` +
+          `4H тренд: ${entrySignal._4hTrend || '?'} | подход: ${entrySignal._4hApproach || '?'}\n` +
+          `Отмена: пробой уровня или 30 мин` +
+          (entrySignal._aiConfidence ? `\n\n🤖 AI (${entrySignal._aiConfidence}%): ${entrySignal._aiReason}` : '')
         );
+
+        logger.info(`Лимитный ордер размещён: ${result.id} — ожидание исполнения`);
         return;
       }
 
-      // Market order or instantly filled limit — register position
-      this.positions.set(posKey, position);
+      // Мгновенное исполнение
+      this.positions.set(pair, position);
       this.riskManager.addPosition(position);
 
       await this.notifier.notifyTrade({
@@ -579,9 +792,9 @@ class TradingBot {
         riskAmount: sizing.riskAmount,
       });
       await this.webhook.pushToN8n('trade_opened', position);
-      logger.info(`${pair} ${timeframe}: ${entrySignal.signal} entry — ${entrySignal.reason}`);
+      logger.info(`${pair}: ${entrySignal.signal} вход — ${entrySignal.reason}`);
     } catch (err) {
-      logger.error(`Failed to place order ${pair}: ${err.message}`);
+      logger.error(`Ошибка размещения ордера ${pair}: ${err.message}`);
       await this.notifier.notifyError(err);
       await this.webhook.pushToN8n('order_error', { pair, error: err.message });
     }

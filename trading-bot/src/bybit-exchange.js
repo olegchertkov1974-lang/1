@@ -13,7 +13,7 @@ const logger = require('./logger');
 
 // User-facing pair names (without settlement suffix)
 const ALLOWED_PAIRS = ['BTC/USDT', 'ETH/USDT', 'SOL/USDT', 'BNB/USDT', 'XRP/USDT'];
-const ALLOWED_TIMEFRAMES = ['15m', '1h', '4h'];
+const ALLOWED_TIMEFRAMES = ['5m', '15m', '1h', '4h', '1d'];
 const MAX_RETRIES = 3;
 const BASE_RETRY_DELAY = 2000; // ms
 
@@ -116,7 +116,11 @@ class BybitExchange {
    * Place a limit order with SL and TP at the level price.
    * Falls back to market order if price moves past the level.
    */
-  async placeOrder(pair, side, amount, stopLoss, takeProfit, limitPrice) {
+  /**
+   * Разместить ордер. PostOnly гарантирует maker-комиссию (0.02%).
+   * @param {boolean} postOnly — если true, ордер будет PostOnly (отменится если станет taker)
+   */
+  async placeOrder(pair, side, amount, stopLoss, takeProfit, limitPrice, postOnly = false) {
     this.validatePair(pair);
 
     return this._retry(async () => {
@@ -125,13 +129,17 @@ class BybitExchange {
       if (stopLoss) params.stopLoss = { triggerPrice: stopLoss, type: 'market' };
       if (takeProfit) params.takeProfit = { triggerPrice: takeProfit, type: 'market' };
 
-      // Use limit order if price provided, otherwise market
+      // PostOnly — гарантия maker-комиссии
+      if (postOnly && limitPrice) {
+        params.timeInForce = 'PostOnly';
+      }
+
       const orderType = limitPrice ? 'limit' : 'market';
       const price = limitPrice || undefined;
 
-      logger.info(`Placing ${orderType} ${side} order: ${pair} size=${amount} price=${limitPrice || 'market'} SL=${stopLoss} TP=${takeProfit}`);
+      logger.info(`Ордер ${orderType}${postOnly ? ' PostOnly' : ''} ${side}: ${pair} объём=${amount} цена=${limitPrice || 'market'} SL=${stopLoss} TP=${takeProfit}`);
       const order = await this.exchange.createOrder(this._toLinear(pair), orderType, side, amount, price, params);
-      logger.info(`Order placed: ${order.id} (${orderType})`);
+      logger.info(`Ордер размещён: ${order.id} (${orderType}${postOnly ? ' PostOnly' : ''})`);
       return order;
     }, `placeOrder(${pair}, ${side})`);
   }

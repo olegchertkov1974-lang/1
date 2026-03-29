@@ -1,314 +1,67 @@
 'use strict';
 
 /**
- * Gerchik Levels Strategy
+ * Gerchik Levels Strategy (полная методология Герчика)
  *
- * Finds horizontal price levels from historical data (local highs/lows,
- * accumulation zones) and generates entry/exit signals based on:
- *   - Confirmed breakout above resistance  → long
- *   - Confirmed breakout below support     → short
- *   - Bounce off support                   → long
- *   - Bounce off resistance                → short
- *
- * Uses candle-close confirmation to filter false breakouts.
- * Integrates risk management: 1-3% risk per trade, SL/TP with min 1:3 R:R.
- * Volume filter: skips signals when daily volume < threshold.
+ * Уровни строятся по ТЕЛАМ свечей на 1D.
+ * Классификация: зеркальный, ложный пробой, мульти-тач.
+ * Паттерны входа на 5m: ложный пробой, отбой, поглощение, база.
+ * SL за зоной уровня + 2-3 тика, TP на следующем дневном уровне.
+ * Минимум R:R = 1:3.
  */
 
-const LEVEL_LOOKBACK = 100;          // candles to scan for levels
-const LEVEL_TOUCH_MIN = 2;           // min touches to confirm a level
-const LEVEL_ZONE_PCT = 0.15;         // % tolerance around a level
-const BREAKOUT_CONFIRM_CANDLES = 2;  // candles closing beyond level
-const BOUNCE_WICK_RATIO = 0.6;       // wick-to-body ratio for bounce candle
-const DEFAULT_RISK_PCT = 1;          // % of balance risked per trade (1-3)
-const MIN_RR_RATIO = 3;              // minimum reward-to-risk ratio
-const ATR_PERIOD = 14;               // ATR period for SL calculation
-const VOLUME_MA_PERIOD = 20;         // period for average volume
+const LEVEL_LOOKBACK = 120;          // дневных свечей для поиска уровней
+const LEVEL_TOUCH_MIN = 2;           // мин касаний для подтверждения уровня
+const LEVEL_ZONE_PCT = 0.15;         // % ширина зоны уровня
+const MIN_RR_RATIO = 3;              // минимальное R:R
+const TICK_BUFFER = 3;               // тиков буфер для SL
+const ENTRY_OFFSET_TICKS = 2;        // тиков отступ для лимитки
+const MAX_LEVEL_TOUCHES = 4;         // макс касаний — дальше уровень изношен
+const ROUND_NUMBER_THRESHOLD = 1000; // для крипто: 60000, 65000 etc
 
 class GerchikLevels {
   getName() {
     return 'gerchik-levels';
   }
 
-  buildIndicator(indicatorBuilder, options) {
-    if (!indicatorBuilder) return;
-    indicatorBuilder.add('atr', 'atr', options.period || '15m', { length: ATR_PERIOD });
-    indicatorBuilder.add('volume_ma', 'sma', options.period || '15m', {
-      length: VOLUME_MA_PERIOD,
-      source: 'volume',
-    });
-  }
+  // ────────────────────────────────────────────────
+  //  УРОВНИ — построение по ТЕЛАМ свечей (1D)
+  // ────────────────────────────────────────────────
 
   /**
-   * Main period callback — called on every new candle.
+   * Найти уровни по дневным свечам (тела свечей, не хвосты).
+   * Возвращает массив объектов с классификацией и оценкой силы.
    */
-  async period(indicatorPeriod, options = {}) {
-    const candles = indicatorPeriod.getLatestCandles
-      ? indicatorPeriod.getLatestCandles(LEVEL_LOOKBACK)
-      : indicatorPeriod.lookback
-        ? indicatorPeriod.lookback(LEVEL_LOOKBACK)
-        : [];
+  findLevels(dailyCandles) {
+    if (!dailyCandles || dailyCandles.length < 20) return [];
 
-    if (!candles || candles.length < LEVEL_LOOKBACK / 2) {
-      return undefined; // not enough data
-    }
-
-    const currentCandle = candles[candles.length - 1];
-    const prevCandle = candles[candles.length - 2];
-    if (!currentCandle || !prevCandle) return undefined;
-
-    // --- Volume filter ---
-    const volumeThreshold = options.volumeThreshold || 0;
-    if (volumeThreshold > 0) {
-      const avgVolume = this._averageVolume(candles, VOLUME_MA_PERIOD);
-      if (currentCandle.volume < volumeThreshold || currentCandle.volume < avgVolume * 0.5) {
-        return undefined; // insufficient volume
-      }
-    }
-
-    // --- Find horizontal levels ---
-    const levels = this._findLevels(candles);
-    if (levels.length === 0) return undefined;
-
-    // --- ATR for stop-loss ---
-    const atrValue = indicatorPeriod.getIndicator
-      ? indicatorPeriod.getIndicator('atr')
-      : this._calculateATR(candles, ATR_PERIOD);
-    const atr = typeof atrValue === 'number' ? atrValue : (atrValue && atrValue.value) || this._calculateATR(candles, ATR_PERIOD);
-
-    // --- Check signals against each level ---
-    const signal = this._evaluateSignals(candles, levels, atr, options);
-    return signal;
-  }
-
-  // ────────────────────────────────────────────────
-  //  ENTRY SIGNAL
-  // ────────────────────────────────────────────────
-  entrySignal(candles, levels, atr, options = {}) {
-    if (!candles || candles.length < 3) return null;
-
-    const current = candles[candles.length - 1];
-    const prev = candles[candles.length - 2];
-    const prev2 = candles[candles.length - 3];
-
-    for (const level of levels) {
-      const zonePct = (options.levelZonePct || LEVEL_ZONE_PCT) / 100;
-      const zoneSize = level.price * zonePct;
-      const upperBound = level.price + zoneSize;
-      const lowerBound = level.price - zoneSize;
-
-      // --- BREAKOUT UP (resistance) ---
-      if (level.type === 'resistance' || level.type === 'dual') {
-        if (
-          this._isCandleClosedAbove(current, upperBound) &&
-          this._isCandleClosedAbove(prev, upperBound) &&
-          prev2.close <= upperBound
-        ) {
-          if (this._isStrongBullishCandle(current) && this._isStrongBullishCandle(prev)) {
-            const stopLoss = lowerBound - atr * 0.5;
-            const entry = current.close;
-            const risk = entry - stopLoss;
-            const takeProfit = entry + risk * MIN_RR_RATIO;
-
-            return {
-              signal: 'long',
-              type: 'breakout',
-              entry,
-              stopLoss,
-              takeProfit,
-              level: level.price,
-              risk,
-              riskRewardRatio: MIN_RR_RATIO,
-              reason: `Пробой сопротивления ${level.price.toFixed(2)}`,
-            };
-          }
-        }
-      }
-
-      // --- BREAKOUT DOWN (support) ---
-      if (level.type === 'support' || level.type === 'dual') {
-        if (
-          this._isCandleClosedBelow(current, lowerBound) &&
-          this._isCandleClosedBelow(prev, lowerBound) &&
-          prev2.close >= lowerBound
-        ) {
-          if (this._isStrongBearishCandle(current) && this._isStrongBearishCandle(prev)) {
-            const stopLoss = upperBound + atr * 0.5;
-            const entry = current.close;
-            const risk = stopLoss - entry;
-            const takeProfit = entry - risk * MIN_RR_RATIO;
-
-            return {
-              signal: 'short',
-              type: 'breakout',
-              entry,
-              stopLoss,
-              takeProfit,
-              level: level.price,
-              risk,
-              riskRewardRatio: MIN_RR_RATIO,
-              reason: `Пробой поддержки ${level.price.toFixed(2)}`,
-            };
-          }
-        }
-      }
-
-      // --- BOUNCE OFF SUPPORT ---
-      if (level.type === 'support' || level.type === 'dual') {
-        if (
-          prev.low <= upperBound &&
-          prev.low >= lowerBound - atr * 0.3 &&
-          current.close > level.price &&
-          this._isBounceCandle(current, 'up')
-        ) {
-          const stopLoss = lowerBound - atr * 0.5;
-          const entry = current.close;
-          const risk = entry - stopLoss;
-          const takeProfit = entry + risk * MIN_RR_RATIO;
-
-          return {
-            signal: 'long',
-            type: 'bounce',
-            entry,
-            stopLoss,
-            takeProfit,
-            level: level.price,
-            risk,
-            riskRewardRatio: MIN_RR_RATIO,
-            reason: `Отскок от поддержки ${level.price.toFixed(2)}`,
-          };
-        }
-      }
-
-      // --- BOUNCE OFF RESISTANCE ---
-      if (level.type === 'resistance' || level.type === 'dual') {
-        if (
-          prev.high >= lowerBound &&
-          prev.high <= upperBound + atr * 0.3 &&
-          current.close < level.price &&
-          this._isBounceCandle(current, 'down')
-        ) {
-          const stopLoss = upperBound + atr * 0.5;
-          const entry = current.close;
-          const risk = stopLoss - entry;
-          const takeProfit = entry - risk * MIN_RR_RATIO;
-
-          return {
-            signal: 'short',
-            type: 'bounce',
-            entry,
-            stopLoss,
-            takeProfit,
-            level: level.price,
-            risk,
-            riskRewardRatio: MIN_RR_RATIO,
-            reason: `Отскок от сопротивления ${level.price.toFixed(2)}`,
-          };
-        }
-      }
-    }
-
-    return null;
-  }
-
-  // ────────────────────────────────────────────────
-  //  EXIT SIGNAL
-  // ────────────────────────────────────────────────
-  exitSignal(candles, position, levels, atr) {
-    if (!position || !candles || candles.length < 2) return null;
-
-    const current = candles[candles.length - 1];
-
-    // --- Hard stop-loss hit ---
-    if (position.side === 'long' && current.low <= position.stopLoss) {
-      return { signal: 'close', reason: 'Stop-loss hit (long)', price: position.stopLoss };
-    }
-    if (position.side === 'short' && current.high >= position.stopLoss) {
-      return { signal: 'close', reason: 'Stop-loss hit (short)', price: position.stopLoss };
-    }
-
-    // --- Take-profit hit ---
-    if (position.side === 'long' && current.high >= position.takeProfit) {
-      return { signal: 'close', reason: 'Take-profit hit (long)', price: position.takeProfit };
-    }
-    if (position.side === 'short' && current.low <= position.takeProfit) {
-      return { signal: 'close', reason: 'Take-profit hit (short)', price: position.takeProfit };
-    }
-
-    // --- Opposing level reached → tighten or exit ---
-    for (const level of levels) {
-      const zone = level.price * (LEVEL_ZONE_PCT / 100);
-      if (position.side === 'long' && level.type === 'resistance') {
-        if (current.close >= level.price - zone && current.close < level.price + zone) {
-          return { signal: 'close', reason: `Приближение к сопротивлению ${level.price.toFixed(2)}`, price: current.close };
-        }
-      }
-      if (position.side === 'short' && level.type === 'support') {
-        if (current.close <= level.price + zone && current.close > level.price - zone) {
-          return { signal: 'close', reason: `Приближение к поддержке ${level.price.toFixed(2)}`, price: current.close };
-        }
-      }
-    }
-
-    return null;
-  }
-
-  // ────────────────────────────────────────────────
-  //  RISK MANAGEMENT — position sizing
-  // ────────────────────────────────────────────────
-  calculatePositionSize(balance, entry, stopLoss, riskPct) {
-    const riskPercent = Math.min(Math.max(riskPct || DEFAULT_RISK_PCT, 0.5), 3);
-    const riskAmount = balance * (riskPercent / 100);
-    const riskPerUnit = Math.abs(entry - stopLoss);
-    if (riskPerUnit <= 0) return 0;
-    return riskAmount / riskPerUnit;
-  }
-
-  // ────────────────────────────────────────────────
-  //  INTERNAL: evaluate signals (wraps entry/exit)
-  // ────────────────────────────────────────────────
-  _evaluateSignals(candles, levels, atr, options) {
-    const entry = this.entrySignal(candles, levels, atr, options);
-    if (!entry) return undefined;
-
-    const balance = options.balance || 10000;
-    const riskPct = options.riskPct || DEFAULT_RISK_PCT;
-    const positionSize = this.calculatePositionSize(balance, entry.entry, entry.stopLoss, riskPct);
-
-    return {
-      ...entry,
-      positionSize: parseFloat(positionSize.toFixed(6)),
-      balance,
-      riskPct,
-    };
-  }
-
-  // ────────────────────────────────────────────────
-  //  LEVEL DETECTION
-  // ────────────────────────────────────────────────
-  _findLevels(candles) {
     const pivots = [];
 
-    // Detect local highs and lows (swing points)
-    for (let i = 2; i < candles.length - 2; i++) {
-      const c = candles[i];
-      const isLocalHigh =
-        c.high > candles[i - 1].high &&
-        c.high > candles[i - 2].high &&
-        c.high > candles[i + 1].high &&
-        c.high > candles[i + 2].high;
+    // Ищем развороты по ТЕЛАМ свечей
+    for (let i = 2; i < dailyCandles.length - 2; i++) {
+      const c = dailyCandles[i];
+      const bodyHigh = Math.max(c.open, c.close);
+      const bodyLow = Math.min(c.open, c.close);
 
-      const isLocalLow =
-        c.low < candles[i - 1].low &&
-        c.low < candles[i - 2].low &&
-        c.low < candles[i + 1].low &&
-        c.low < candles[i + 2].low;
+      // Локальный максимум по телу
+      const isBodyHigh =
+        bodyHigh > Math.max(dailyCandles[i - 1].open, dailyCandles[i - 1].close) &&
+        bodyHigh > Math.max(dailyCandles[i - 2].open, dailyCandles[i - 2].close) &&
+        bodyHigh > Math.max(dailyCandles[i + 1].open, dailyCandles[i + 1].close) &&
+        bodyHigh > Math.max(dailyCandles[i + 2].open, dailyCandles[i + 2].close);
 
-      if (isLocalHigh) pivots.push({ price: c.high, type: 'high', index: i });
-      if (isLocalLow) pivots.push({ price: c.low, type: 'low', index: i });
+      // Локальный минимум по телу
+      const isBodyLow =
+        bodyLow < Math.min(dailyCandles[i - 1].open, dailyCandles[i - 1].close) &&
+        bodyLow < Math.min(dailyCandles[i - 2].open, dailyCandles[i - 2].close) &&
+        bodyLow < Math.min(dailyCandles[i + 1].open, dailyCandles[i + 1].close) &&
+        bodyLow < Math.min(dailyCandles[i + 2].open, dailyCandles[i + 2].close);
+
+      if (isBodyHigh) pivots.push({ price: bodyHigh, type: 'high', index: i, candle: c });
+      if (isBodyLow) pivots.push({ price: bodyLow, type: 'low', index: i, candle: c });
     }
 
-    // Cluster nearby pivots into levels
+    // Кластеризация пивотов в уровни
     const levels = [];
     const used = new Set();
 
@@ -332,105 +85,658 @@ class GerchikLevels {
         const hasHighs = cluster.some((p) => p.type === 'high');
         const hasLows = cluster.some((p) => p.type === 'low');
 
-        let type;
-        if (hasHighs && hasLows) type = 'dual';
-        else if (hasHighs) type = 'resistance';
-        else type = 'support';
+        // Определяем ширину зоны по разбросу тел
+        const prices = cluster.map((p) => p.price);
+        const zoneHigh = Math.max(...prices);
+        const zoneLow = Math.min(...prices);
 
-        levels.push({
+        const level = {
           price: parseFloat(avgPrice.toFixed(8)),
-          type,
+          zoneHigh: parseFloat(zoneHigh.toFixed(8)),
+          zoneLow: parseFloat(zoneLow.toFixed(8)),
           touches: cluster.length,
           lastTouchIndex: Math.max(...cluster.map((p) => p.index)),
-        });
+          firstTouchIndex: Math.min(...cluster.map((p) => p.index)),
+          isMirror: hasHighs && hasLows,
+          hasFalseBreakout: false,
+          hasLongWicks: false,
+          isRoundNumber: false,
+          strength: 0,
+          classification: '',
+          type: hasHighs && hasLows ? 'dual' : hasHighs ? 'resistance' : 'support',
+        };
+
+        // Проверяем ложный пробой
+        level.hasFalseBreakout = this._detectFalseBreakout(dailyCandles, level);
+
+        // Проверяем длинные хвосты от уровня
+        level.hasLongWicks = this._detectLongWicks(dailyCandles, level);
+
+        // Проверяем круглое число
+        level.isRoundNumber = this._isRoundNumber(level.price);
+
+        // Классификация
+        level.classification = this._classifyLevel(level);
+
+        // Оценка силы
+        level.strength = this._scoreLevel(level, dailyCandles);
+
+        levels.push(level);
       }
     }
 
-    // Sort by number of touches (strongest first)
-    levels.sort((a, b) => b.touches - a.touches);
-    return levels.slice(0, 10); // top 10 levels
+    // Сортировка по силе (сильнейшие первые)
+    levels.sort((a, b) => b.strength - a.strength);
+
+    // Фильтруем слабые уровни (сила < 3) и изношенные (4+ касаний за последние дни)
+    return levels.filter((l) => l.strength >= 3);
   }
 
   // ────────────────────────────────────────────────
-  //  CANDLE HELPERS
+  //  КЛАССИФИКАЦИЯ УРОВНЯ
   // ────────────────────────────────────────────────
-  _isCandleClosedAbove(candle, price) {
-    return candle.close > price;
+
+  _classifyLevel(level) {
+    if (level.isMirror) return 'mirror';           // Зеркальный — самый сильный
+    if (level.hasFalseBreakout) return 'false_breakout'; // С ложным пробоем
+    if (level.touches >= 3) return 'multi_touch';  // Мульти-тач
+    return 'standard';                              // Стандартный (2 касания)
   }
 
-  _isCandleClosedBelow(candle, price) {
-    return candle.close < price;
-  }
+  _scoreLevel(level, dailyCandles) {
+    let score = 0;
 
-  _isStrongBullishCandle(candle) {
-    const body = candle.close - candle.open;
-    const range = candle.high - candle.low;
-    return body > 0 && range > 0 && body / range > 0.5;
-  }
-
-  _isStrongBearishCandle(candle) {
-    const body = candle.open - candle.close;
-    const range = candle.high - candle.low;
-    return body > 0 && range > 0 && body / range > 0.5;
-  }
-
-  _isBounceCandle(candle, direction) {
-    const body = Math.abs(candle.close - candle.open);
-    const range = candle.high - candle.low;
-    if (range === 0) return false;
-
-    if (direction === 'up') {
-      // Long lower wick, small body, close near high
-      const lowerWick = Math.min(candle.open, candle.close) - candle.low;
-      return lowerWick / range >= BOUNCE_WICK_RATIO && candle.close > candle.open;
+    // Базовый балл за касания (2 = +2, 3 = +3, но >4 — ослабление)
+    if (level.touches <= 3) {
+      score += level.touches;
+    } else {
+      score += 3; // 3 — максимум, дальше износ
+      score -= (level.touches - 3); // штраф за каждое касание свыше 3
     }
-    if (direction === 'down') {
-      // Long upper wick, small body, close near low
-      const upperWick = candle.high - Math.max(candle.open, candle.close);
-      return upperWick / range >= BOUNCE_WICK_RATIO && candle.close < candle.open;
+
+    // Зеркальность: +3
+    if (level.isMirror) score += 3;
+
+    // Ложный пробой: +2
+    if (level.hasFalseBreakout) score += 2;
+
+    // Длинные хвосты: +1
+    if (level.hasLongWicks) score += 1;
+
+    // Круглое число: +1
+    if (level.isRoundNumber) score += 1;
+
+    // Свежесть: первый-второй подход — +1
+    const totalCandles = dailyCandles.length;
+    const recency = totalCandles - level.lastTouchIndex;
+    if (recency <= 10) score += 1; // недавний тест
+
+    // Давно не тестировался (>60 дневных свечей) — -1
+    if (recency > 60) score -= 1;
+
+    return score;
+  }
+
+  _detectFalseBreakout(candles, level) {
+    const zone = (level.zoneHigh - level.zoneLow) || level.price * (LEVEL_ZONE_PCT / 100);
+    const upperBound = level.zoneHigh + zone * 0.5;
+    const lowerBound = level.zoneLow - zone * 0.5;
+
+    for (let i = 3; i < candles.length - 1; i++) {
+      const c = candles[i];
+      const next = candles[i + 1];
+      const bodyHigh = Math.max(c.open, c.close);
+      const bodyLow = Math.min(c.open, c.close);
+
+      // Пробой вверх и возврат
+      if (bodyHigh > upperBound) {
+        const nextBodyHigh = Math.max(next.open, next.close);
+        if (nextBodyHigh < upperBound) return true;
+      }
+
+      // Пробой вниз и возврат
+      if (bodyLow < lowerBound) {
+        const nextBodyLow = Math.min(next.open, next.close);
+        if (nextBodyLow > lowerBound) return true;
+      }
     }
+
     return false;
   }
 
-  _averageVolume(candles, period) {
-    const slice = candles.slice(-period);
-    if (slice.length === 0) return 0;
-    return slice.reduce((sum, c) => sum + (c.volume || 0), 0) / slice.length;
+  _detectLongWicks(candles, level) {
+    const zone = level.price * (LEVEL_ZONE_PCT / 100);
+    let longWickCount = 0;
+
+    for (const c of candles) {
+      const bodyHigh = Math.max(c.open, c.close);
+      const bodyLow = Math.min(c.open, c.close);
+      const bodySize = bodyHigh - bodyLow || 0.0001;
+
+      // Свеча касается зоны уровня
+      if (c.low <= level.price + zone && c.high >= level.price - zone) {
+        const lowerWick = bodyLow - c.low;
+        const upperWick = c.high - bodyHigh;
+
+        // Длинный хвост = хвост > тела
+        if (lowerWick > bodySize || upperWick > bodySize) {
+          longWickCount++;
+        }
+      }
+    }
+
+    return longWickCount >= 2;
   }
 
-  _calculateATR(candles, period) {
-    if (candles.length < period + 1) return 0;
-    const trs = [];
-    for (let i = candles.length - period; i < candles.length; i++) {
-      const c = candles[i];
-      const p = candles[i - 1];
-      if (!p) continue;
-      const tr = Math.max(c.high - c.low, Math.abs(c.high - p.close), Math.abs(c.low - p.close));
-      trs.push(tr);
+  _isRoundNumber(price) {
+    // Для крипто: кратные 1000 (60000, 65000, etc.)
+    if (price >= 10000) return price % 5000 === 0 || price % 1000 === 0;
+    if (price >= 100) return price % 100 === 0 || price % 50 === 0;
+    if (price >= 10) return price % 10 === 0 || price % 5 === 0;
+    return price % 1 === 0 || price % 0.5 === 0;
+  }
+
+  // ────────────────────────────────────────────────
+  //  ТРЕНД НА 4H
+  // ────────────────────────────────────────────────
+
+  /**
+   * Определить тренд по 4H свечам.
+   * Возвращает: 'up', 'down', 'neutral'
+   */
+  detectTrend4H(candles4H) {
+    if (!candles4H || candles4H.length < 20) return 'neutral';
+
+    // Серия повышающихся минимумов = восходящий
+    // Серия понижающихся максимумов = нисходящий
+    const recent = candles4H.slice(-20);
+    let higherLows = 0;
+    let lowerHighs = 0;
+
+    for (let i = 1; i < recent.length; i++) {
+      const prevLow = Math.min(recent[i - 1].open, recent[i - 1].close);
+      const currLow = Math.min(recent[i].open, recent[i].close);
+      const prevHigh = Math.max(recent[i - 1].open, recent[i - 1].close);
+      const currHigh = Math.max(recent[i].open, recent[i].close);
+
+      if (currLow > prevLow) higherLows++;
+      if (currHigh < prevHigh) lowerHighs++;
     }
-    return trs.reduce((s, v) => s + v, 0) / trs.length;
+
+    const total = recent.length - 1;
+    if (higherLows > total * 0.55) return 'up';
+    if (lowerHighs > total * 0.55) return 'down';
+    return 'neutral';
+  }
+
+  /**
+   * Проверяет, подтверждает ли 4H тренд направление сделки.
+   * Возвращает: { confirmed: bool, reduce: bool }
+   */
+  check4HConfirmation(candles4H, direction) {
+    const trend = this.detectTrend4H(candles4H);
+
+    if (direction === 'long') {
+      if (trend === 'up') return { confirmed: true, reduce: false };
+      if (trend === 'neutral') return { confirmed: true, reduce: false };
+      return { confirmed: false, reduce: true }; // 4H вниз — противоречие
+    }
+
+    if (direction === 'short') {
+      if (trend === 'down') return { confirmed: true, reduce: false };
+      if (trend === 'neutral') return { confirmed: true, reduce: false };
+      return { confirmed: false, reduce: true }; // 4H вверх — противоречие
+    }
+
+    return { confirmed: true, reduce: false };
+  }
+
+  /**
+   * Проверяет поведение цены на 4H при подходе к уровню.
+   * Ищет: поджатие, ложный пробой, формирование базы.
+   */
+  analyze4HApproach(candles4H, level) {
+    if (!candles4H || candles4H.length < 5) return { approach: 'unknown' };
+
+    const recent = candles4H.slice(-6);
+    const zone = level.price * (LEVEL_ZONE_PCT / 100);
+    const upperBound = level.price + zone;
+    const lowerBound = level.price - zone;
+
+    // Проверяем последние свечи
+    let inZone = 0;
+    let smallBodies = 0;
+    let falseBreak = false;
+
+    for (let i = 0; i < recent.length; i++) {
+      const c = recent[i];
+      const bodyHigh = Math.max(c.open, c.close);
+      const bodyLow = Math.min(c.open, c.close);
+
+      if (bodyLow <= upperBound && bodyHigh >= lowerBound) {
+        inZone++;
+      }
+
+      const bodySize = bodyHigh - bodyLow;
+      const range = c.high - c.low;
+      if (range > 0 && bodySize / range < 0.3) {
+        smallBodies++;
+      }
+
+      // Ложный пробой на 4H
+      if (i < recent.length - 1) {
+        const next = recent[i + 1];
+        if (bodyHigh > upperBound && Math.max(next.open, next.close) < upperBound) {
+          falseBreak = true;
+        }
+        if (bodyLow < lowerBound && Math.min(next.open, next.close) > lowerBound) {
+          falseBreak = true;
+        }
+      }
+    }
+
+    if (falseBreak) return { approach: 'false_breakout' };
+    if (smallBodies >= 3) return { approach: 'base' }; // Формирование базы
+    if (inZone >= 2) return { approach: 'compression' }; // Поджатие
+
+    return { approach: 'direct' };
+  }
+
+  // ────────────────────────────────────────────────
+  //  ПАТТЕРНЫ ВХОДА НА 5m
+  // ────────────────────────────────────────────────
+
+  /**
+   * Искать паттерн входа на 5m свечах в зоне дневного уровня.
+   * Возвращает сигнал или null.
+   */
+  findEntryPattern(candles5m, level, direction, allDailyLevels, tickSize) {
+    if (!candles5m || candles5m.length < 6) return null;
+
+    const tick = tickSize || this._estimateTickSize(level.price);
+    const zone = Math.max(level.zoneHigh - level.zoneLow, level.price * (LEVEL_ZONE_PCT / 100));
+    const upperBound = level.zoneHigh || (level.price + zone / 2);
+    const lowerBound = level.zoneLow || (level.price - zone / 2);
+
+    // Проверяем, что цена находится в зоне уровня
+    const current = candles5m[candles5m.length - 1];
+    const distToLevel = Math.abs(current.close - level.price) / level.price;
+    if (distToLevel > LEVEL_ZONE_PCT / 100 * 3) return null; // слишком далеко
+
+    // Проверяем 4 паттерна в порядке приоритета
+    let pattern = null;
+
+    pattern = this._checkFalseBreakoutPattern(candles5m, level, direction, tick);
+    if (pattern) return this._buildSignal(pattern, level, direction, allDailyLevels, tick);
+
+    pattern = this._checkEngulfingPattern(candles5m, level, direction, tick);
+    if (pattern) return this._buildSignal(pattern, level, direction, allDailyLevels, tick);
+
+    pattern = this._checkBouncePattern(candles5m, level, direction, tick);
+    if (pattern) return this._buildSignal(pattern, level, direction, allDailyLevels, tick);
+
+    pattern = this._checkBasePattern(candles5m, level, direction, tick);
+    if (pattern) return this._buildSignal(pattern, level, direction, allDailyLevels, tick);
+
+    return null;
+  }
+
+  /**
+   * 1. Ложный пробой — свеча пробивает уровень, следующая возвращается.
+   */
+  _checkFalseBreakoutPattern(candles, level, direction, tick) {
+    const prev = candles[candles.length - 2];
+    const curr = candles[candles.length - 1];
+    if (!prev || !curr) return null;
+
+    const zone = level.price * (LEVEL_ZONE_PCT / 100);
+
+    if (direction === 'long') {
+      // Пробой вниз (хвостом или телом) + возврат
+      const prevPenetrated = prev.low < level.price - zone;
+      const currReturned = curr.close > level.price - zone / 2;
+      const currBullish = curr.close > curr.open;
+
+      if (prevPenetrated && currReturned && currBullish) {
+        return { type: 'false_breakout', typeRu: 'Ложный пробой', entry: curr.close };
+      }
+    }
+
+    if (direction === 'short') {
+      // Пробой вверх + возврат
+      const prevPenetrated = prev.high > level.price + zone;
+      const currReturned = curr.close < level.price + zone / 2;
+      const currBearish = curr.close < curr.open;
+
+      if (prevPenetrated && currReturned && currBearish) {
+        return { type: 'false_breakout', typeRu: 'Ложный пробой', entry: curr.close };
+      }
+    }
+
+    return null;
+  }
+
+  /**
+   * 2. Отбой — свеча касается зоны с длинным хвостом, тело по правильную сторону.
+   */
+  _checkBouncePattern(candles, level, direction, tick) {
+    const curr = candles[candles.length - 1];
+    if (!curr) return null;
+
+    const zone = level.price * (LEVEL_ZONE_PCT / 100);
+    const bodyHigh = Math.max(curr.open, curr.close);
+    const bodyLow = Math.min(curr.open, curr.close);
+    const bodySize = bodyHigh - bodyLow || 0.0001;
+    const range = curr.high - curr.low;
+
+    if (direction === 'long') {
+      // Касание зоны поддержки + длинный нижний хвост
+      const touchesZone = curr.low <= level.price + zone && curr.low >= level.price - zone * 2;
+      const longLowerWick = (bodyLow - curr.low) > bodySize;
+      const bodyAbove = bodyLow > level.price - zone;
+      const bullish = curr.close >= curr.open;
+
+      if (touchesZone && longLowerWick && bodyAbove && bullish) {
+        return { type: 'bounce', typeRu: 'Отскок', entry: curr.close };
+      }
+    }
+
+    if (direction === 'short') {
+      // Касание зоны сопротивления + длинный верхний хвост
+      const touchesZone = curr.high >= level.price - zone && curr.high <= level.price + zone * 2;
+      const longUpperWick = (curr.high - bodyHigh) > bodySize;
+      const bodyBelow = bodyHigh < level.price + zone;
+      const bearish = curr.close <= curr.open;
+
+      if (touchesZone && longUpperWick && bodyBelow && bearish) {
+        return { type: 'bounce', typeRu: 'Отскок', entry: curr.close };
+      }
+    }
+
+    return null;
+  }
+
+  /**
+   * 3. Поглощение — свеча полностью перекрывает тело предыдущей в направлении отбоя.
+   */
+  _checkEngulfingPattern(candles, level, direction, tick) {
+    const prev = candles[candles.length - 2];
+    const curr = candles[candles.length - 1];
+    if (!prev || !curr) return null;
+
+    const zone = level.price * (LEVEL_ZONE_PCT / 100);
+    const distToLevel = Math.abs(curr.close - level.price) / level.price;
+    if (distToLevel > LEVEL_ZONE_PCT / 100 * 2) return null;
+
+    const prevBodyHigh = Math.max(prev.open, prev.close);
+    const prevBodyLow = Math.min(prev.open, prev.close);
+    const currBodyHigh = Math.max(curr.open, curr.close);
+    const currBodyLow = Math.min(curr.open, curr.close);
+
+    if (direction === 'long') {
+      // Бычье поглощение у поддержки
+      const prevBearish = prev.close < prev.open;
+      const currBullish = curr.close > curr.open;
+      const engulfs = currBodyHigh > prevBodyHigh && currBodyLow <= prevBodyLow;
+      const nearLevel = curr.low <= level.price + zone;
+
+      if (prevBearish && currBullish && engulfs && nearLevel) {
+        return { type: 'engulfing', typeRu: 'Поглощение', entry: curr.close };
+      }
+    }
+
+    if (direction === 'short') {
+      // Медвежье поглощение у сопротивления
+      const prevBullish = prev.close > prev.open;
+      const currBearish = curr.close < curr.open;
+      const engulfs = currBodyLow < prevBodyLow && currBodyHigh >= prevBodyHigh;
+      const nearLevel = curr.high >= level.price - zone;
+
+      if (prevBullish && currBearish && engulfs && nearLevel) {
+        return { type: 'engulfing', typeRu: 'Поглощение', entry: curr.close };
+      }
+    }
+
+    return null;
+  }
+
+  /**
+   * 4. База (проторговка) — 3-5 маленьких свечей у уровня, затем выход.
+   */
+  _checkBasePattern(candles, level, direction, tick) {
+    if (candles.length < 5) return null;
+
+    const zone = level.price * (LEVEL_ZONE_PCT / 100);
+    const recent = candles.slice(-5);
+    const curr = recent[recent.length - 1];
+
+    // Считаем маленькие свечи в зоне
+    let smallInZone = 0;
+    let avgRange = 0;
+
+    for (let i = 0; i < recent.length - 1; i++) {
+      const c = recent[i];
+      const bodyHigh = Math.max(c.open, c.close);
+      const bodyLow = Math.min(c.open, c.close);
+      const bodySize = bodyHigh - bodyLow;
+      const range = c.high - c.low;
+      avgRange += range;
+
+      const nearLevel = Math.abs(c.close - level.price) / level.price <= LEVEL_ZONE_PCT / 100 * 2;
+      const smallBody = range > 0 && bodySize / range < 0.4;
+
+      if (nearLevel && smallBody) smallInZone++;
+    }
+
+    avgRange /= (recent.length - 1);
+    if (smallInZone < 3) return null;
+
+    // Последняя свеча — выход из базы
+    const currBodySize = Math.abs(curr.close - curr.open);
+
+    if (direction === 'long') {
+      const breakout = curr.close > curr.open && currBodySize > avgRange * 0.5;
+      if (breakout) {
+        return { type: 'base', typeRu: 'База (проторговка)', entry: curr.close };
+      }
+    }
+
+    if (direction === 'short') {
+      const breakout = curr.close < curr.open && currBodySize > avgRange * 0.5;
+      if (breakout) {
+        return { type: 'base', typeRu: 'База (проторговка)', entry: curr.close };
+      }
+    }
+
+    return null;
+  }
+
+  // ────────────────────────────────────────────────
+  //  ПОСТРОЕНИЕ СИГНАЛА
+  // ────────────────────────────────────────────────
+
+  _buildSignal(pattern, level, direction, allDailyLevels, tick) {
+    // SL: за границей зоны уровня + буфер 2-3 тика
+    const buffer = tick * TICK_BUFFER;
+    let stopLoss;
+    let entry;
+
+    if (direction === 'long') {
+      stopLoss = (level.zoneLow || level.price) - buffer;
+      entry = (level.zoneLow || level.price) + tick * ENTRY_OFFSET_TICKS;
+    } else {
+      stopLoss = (level.zoneHigh || level.price) + buffer;
+      entry = (level.zoneHigh || level.price) - tick * ENTRY_OFFSET_TICKS;
+    }
+
+    // Используем цену из паттерна как альтернативу если ближе к рынку
+    if (direction === 'long' && pattern.entry > entry) entry = pattern.entry;
+    if (direction === 'short' && pattern.entry < entry) entry = pattern.entry;
+
+    // TP: на следующем дневном уровне
+    let takeProfit = null;
+    if (allDailyLevels && allDailyLevels.length > 0) {
+      takeProfit = this._findNextLevel(entry, direction, allDailyLevels);
+    }
+
+    // Fallback: если нет следующего уровня — математический TP
+    const risk = Math.abs(entry - stopLoss);
+    if (!takeProfit) {
+      takeProfit = direction === 'long'
+        ? entry + risk * MIN_RR_RATIO
+        : entry - risk * MIN_RR_RATIO;
+    }
+
+    // Проверка R:R
+    const reward = Math.abs(takeProfit - entry);
+    const rr = risk > 0 ? reward / risk : 0;
+    if (rr < MIN_RR_RATIO) return null; // R:R недостаточный — пропускаем
+
+    return {
+      signal: direction,
+      type: pattern.type,
+      typeRu: pattern.typeRu,
+      entry: parseFloat(entry.toFixed(8)),
+      stopLoss: parseFloat(stopLoss.toFixed(8)),
+      takeProfit: parseFloat(takeProfit.toFixed(8)),
+      level: level.price,
+      levelClassification: level.classification,
+      levelStrength: level.strength,
+      risk: parseFloat(risk.toFixed(8)),
+      riskRewardRatio: parseFloat(rr.toFixed(2)),
+      reason: `${pattern.typeRu} от ${level.type === 'support' ? 'поддержки' : level.type === 'resistance' ? 'сопротивления' : 'уровня'} ${level.price.toFixed(2)} (${this._classificationRu(level.classification)}, сила: ${level.strength})`,
+    };
+  }
+
+  _classificationRu(classification) {
+    const map = {
+      'mirror': 'зеркальный',
+      'false_breakout': 'с ложным пробоем',
+      'multi_touch': 'мульти-тач',
+      'standard': 'стандартный',
+    };
+    return map[classification] || classification;
+  }
+
+  /**
+   * Найти ближайший дневной уровень в направлении сделки для TP.
+   */
+  _findNextLevel(entry, direction, allLevels) {
+    let best = null;
+    let bestDist = Infinity;
+
+    for (const l of allLevels) {
+      if (direction === 'long' && l.price > entry) {
+        const dist = l.price - entry;
+        if (dist < bestDist) {
+          bestDist = dist;
+          best = l.price;
+        }
+      }
+      if (direction === 'short' && l.price < entry) {
+        const dist = entry - l.price;
+        if (dist < bestDist) {
+          bestDist = dist;
+          best = l.price;
+        }
+      }
+    }
+
+    return best;
+  }
+
+  // ────────────────────────────────────────────────
+  //  ПРОВЕРКА ПРОБОЯ УРОВНЯ (для отмены ордера)
+  // ────────────────────────────────────────────────
+
+  /**
+   * Проверяет, пробит ли уровень на 5m (закрытие тела за уровнем).
+   * Это главный триггер отмены лимитного ордера.
+   */
+  isLevelBroken(candle5m, level, direction) {
+    const bodyClose = candle5m.close;
+    const zone = level.price * (LEVEL_ZONE_PCT / 100);
+
+    if (direction === 'long') {
+      // Для лонга (поддержка): пробой вниз = закрытие тела ниже зоны
+      return bodyClose < (level.zoneLow || level.price) - zone;
+    }
+
+    if (direction === 'short') {
+      // Для шорта (сопротивление): пробой вверх = закрытие тела выше зоны
+      return bodyClose > (level.zoneHigh || level.price) + zone;
+    }
+
+    return false;
+  }
+
+  /**
+   * Проверяет, изношен ли уровень (4+ касаний за последние N свечей).
+   */
+  isLevelWornOut(level, recentDailyCandles) {
+    if (!recentDailyCandles || recentDailyCandles.length < 5) return false;
+
+    const zone = level.price * (LEVEL_ZONE_PCT / 100);
+    let recentTouches = 0;
+    const lookback = Math.min(recentDailyCandles.length, 10); // последние 10 дней
+
+    for (let i = recentDailyCandles.length - lookback; i < recentDailyCandles.length; i++) {
+      const c = recentDailyCandles[i];
+      if (!c) continue;
+      const bodyHigh = Math.max(c.open, c.close);
+      const bodyLow = Math.min(c.open, c.close);
+
+      if (bodyLow <= level.price + zone && bodyHigh >= level.price - zone) {
+        recentTouches++;
+      }
+    }
+
+    return recentTouches >= MAX_LEVEL_TOUCHES;
+  }
+
+  // ────────────────────────────────────────────────
+  //  ВСПОМОГАТЕЛЬНЫЕ МЕТОДЫ
+  // ────────────────────────────────────────────────
+
+  _estimateTickSize(price) {
+    // Примерный размер тика для крипто
+    if (price >= 10000) return 1;    // BTC: 1 USD
+    if (price >= 1000) return 0.1;   // ETH: 0.1 USD
+    if (price >= 100) return 0.01;   // SOL/BNB: 0.01
+    if (price >= 1) return 0.001;    // XRP: 0.001
+    return 0.0001;
+  }
+
+  calculatePositionSize(balance, entry, stopLoss, riskPct) {
+    const riskPercent = Math.min(Math.max(riskPct || 1, 0.5), 3);
+    const riskAmount = balance * (riskPercent / 100);
+    const riskPerUnit = Math.abs(entry - stopLoss);
+    if (riskPerUnit <= 0) return 0;
+    return riskAmount / riskPerUnit;
   }
 
   getOptions() {
     return {
       period: {
-        label: 'Timeframe',
-        default: '1h',
-        options: ['15m', '1h', '4h'],
+        label: 'Entry Timeframe',
+        default: '5m',
+        options: ['5m'],
+      },
+      dailyTf: {
+        label: 'Levels Timeframe',
+        default: '1d',
+        options: ['1d'],
+      },
+      confirmTf: {
+        label: 'Confirmation Timeframe',
+        default: '4h',
+        options: ['4h'],
       },
       riskPct: {
         label: 'Risk per trade (%)',
         default: 1,
         min: 0.5,
         max: 3,
-      },
-      volumeThreshold: {
-        label: 'Minimum daily volume (USD)',
-        default: 1000000,
-      },
-      levelZonePct: {
-        label: 'Level zone tolerance (%)',
-        default: LEVEL_ZONE_PCT,
       },
     };
   }
