@@ -12,7 +12,7 @@
 
 const LEVEL_LOOKBACK = 120;          // дневных свечей для поиска уровней
 const LEVEL_TOUCH_MIN = 2;           // мин касаний для подтверждения уровня
-const LEVEL_ZONE_PCT = 0.15;         // % ширина зоны уровня
+const LEVEL_ZONE_PCT = 0.4;          // % ширина зоны уровня (BTC 87k = ~350$)
 const MIN_RR_RATIO = 3;              // минимальное R:R
 const TICK_BUFFER = 3;               // тиков буфер для SL
 const ENTRY_OFFSET_TICKS = 2;        // тиков отступ для лимитки
@@ -37,25 +37,21 @@ class GerchikLevels {
 
     const pivots = [];
 
-    // Ищем развороты по ТЕЛАМ свечей
-    for (let i = 2; i < dailyCandles.length - 2; i++) {
+    // Ищем развороты по ТЕЛАМ свечей (сравнение с 1 соседом с каждой стороны)
+    for (let i = 1; i < dailyCandles.length - 1; i++) {
       const c = dailyCandles[i];
       const bodyHigh = Math.max(c.open, c.close);
       const bodyLow = Math.min(c.open, c.close);
 
-      // Локальный максимум по телу
-      const isBodyHigh =
-        bodyHigh > Math.max(dailyCandles[i - 1].open, dailyCandles[i - 1].close) &&
-        bodyHigh > Math.max(dailyCandles[i - 2].open, dailyCandles[i - 2].close) &&
-        bodyHigh > Math.max(dailyCandles[i + 1].open, dailyCandles[i + 1].close) &&
-        bodyHigh > Math.max(dailyCandles[i + 2].open, dailyCandles[i + 2].close);
+      // Локальный максимум по телу (выше соседей)
+      const prevBodyHigh = Math.max(dailyCandles[i - 1].open, dailyCandles[i - 1].close);
+      const nextBodyHigh = Math.max(dailyCandles[i + 1].open, dailyCandles[i + 1].close);
+      const isBodyHigh = bodyHigh > prevBodyHigh && bodyHigh > nextBodyHigh;
 
-      // Локальный минимум по телу
-      const isBodyLow =
-        bodyLow < Math.min(dailyCandles[i - 1].open, dailyCandles[i - 1].close) &&
-        bodyLow < Math.min(dailyCandles[i - 2].open, dailyCandles[i - 2].close) &&
-        bodyLow < Math.min(dailyCandles[i + 1].open, dailyCandles[i + 1].close) &&
-        bodyLow < Math.min(dailyCandles[i + 2].open, dailyCandles[i + 2].close);
+      // Локальный минимум по телу (ниже соседей)
+      const prevBodyLow = Math.min(dailyCandles[i - 1].open, dailyCandles[i - 1].close);
+      const nextBodyLow = Math.min(dailyCandles[i + 1].open, dailyCandles[i + 1].close);
+      const isBodyLow = bodyLow < prevBodyLow && bodyLow < nextBodyLow;
 
       if (isBodyHigh) pivots.push({ price: bodyHigh, type: 'high', index: i, candle: c });
       if (isBodyLow) pivots.push({ price: bodyLow, type: 'low', index: i, candle: c });
@@ -128,8 +124,8 @@ class GerchikLevels {
     // Сортировка по силе (сильнейшие первые)
     levels.sort((a, b) => b.strength - a.strength);
 
-    // Фильтруем слабые уровни (сила < 3) и изношенные (4+ касаний за последние дни)
-    return levels.filter((l) => l.strength >= 3);
+    // Фильтруем слабые уровни (сила < 2) и изношенные
+    return levels.filter((l) => l.strength >= 2);
   }
 
   // ────────────────────────────────────────────────
