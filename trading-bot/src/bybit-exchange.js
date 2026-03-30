@@ -203,9 +203,9 @@ class BybitExchange {
       );
 
       const response = await this.exchange.privatePostV5PositionTradingStop(params);
-      const retCode = response?.retCode ?? response?.ret_code;
+      const retCode = Number(response?.retCode ?? response?.ret_code ?? 0);
 
-      if (retCode !== undefined && retCode !== 0) {
+      if (retCode !== 0) {
         throw new Error(`setTradingStop: retCode=${retCode} msg=${response?.retMsg || response?.ret_msg || '?'}`);
       }
 
@@ -336,8 +336,8 @@ class BybitExchange {
           sellLeverage: String(leverage),
         };
         const response = await this.exchange.privatePostV5PositionSetLeverage(params);
-        const retCode = response?.retCode ?? response?.ret_code;
-        if (retCode !== undefined && retCode !== 0 && retCode !== 110043) {
+        const retCode = Number(response?.retCode ?? response?.ret_code ?? 0);
+        if (retCode !== 0 && retCode !== 110043) {
           throw new Error(`setLeverage: retCode=${retCode} msg=${response?.retMsg || '?'}`);
         }
         return response;
