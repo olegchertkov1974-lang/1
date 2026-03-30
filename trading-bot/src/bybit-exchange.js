@@ -185,6 +185,7 @@ class BybitExchange {
         category: 'linear',
         symbol: pair.replace('/', ''),  // BTCUSDT
         positionIdx: 0,                 // one-way mode
+        tpSlMode: 'Full',               // обязательно для tpOrderType/slOrderType
       };
 
       if (opts.stopLoss) {
