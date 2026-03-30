@@ -19,7 +19,14 @@ const WebhookServer = require('./webhook-server');
 const TradeStore = require('./trade-store');
 const logger = require('./logger');
 
-const PAIRS = ['BTC/USDT', 'ETH/USDT', 'SOL/USDT', 'BNB/USDT', 'XRP/USDT'];
+const PAIRS = [
+  'BTC/USDT', 'ETH/USDT', 'SOL/USDT', 'BNB/USDT', 'XRP/USDT',
+  'DOGE/USDT', 'ADA/USDT', 'AVAX/USDT', 'DOT/USDT', 'LINK/USDT',
+  'UNI/USDT', 'LTC/USDT', 'BCH/USDT', 'ATOM/USDT', 'FIL/USDT',
+  'NEAR/USDT', 'ARB/USDT', 'OP/USDT', 'INJ/USDT', 'SUI/USDT',
+  'APT/USDT', 'TIA/USDT', 'WLD/USDT', 'PEPE/USDT', 'SHIB/USDT',
+  'MATIC/USDT', 'FTM/USDT', 'SAND/USDT', 'MANA/USDT', 'ALGO/USDT',
+];
 // Герчик: 1D — уровни, 4H — подтверждение тренда, 5m — вход
 const TF_LEVELS = '1d';     // таймфрейм для построения уровней
 const TF_CONFIRM = '4h';    // таймфрейм для подтверждения тренда
