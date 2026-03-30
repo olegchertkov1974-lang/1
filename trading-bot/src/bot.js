@@ -732,22 +732,22 @@ class TradingBot {
       if (!direction) continue;
 
       // 8. Проверка тренда на 4H
+      const trend4H = this.strategy.detectTrend4H(candles4H);
       const confirmation = this.strategy.check4HConfirmation(candles4H, direction);
       if (!confirmation.confirmed && level.strength < 6) {
-        // Слабый уровень + противоречие на 4H — пропуск
-        logger.info(`${pair}: 4H тренд противоречит ${direction} при слабом уровне ${level.price.toFixed(2)} — пропуск`);
+        logger.info(`${pair}: 4H тренд [${trend4H}] противоречит ${direction} при слабом уровне ${level.price.toFixed(2)} (сила ${level.strength}) — пропуск`);
         continue;
       }
 
       // 9. Анализ поведения на 4H при подходе к уровню
       const approach = this.strategy.analyze4HApproach(candles4H, level);
-      logger.debug(`${pair}: подход к уровню на 4H: ${approach.approach}`);
+      logger.info(`${pair}: уровень ${level.price.toFixed(2)} в зоне! 4H тренд: ${trend4H}, подход: ${approach.approach}, направление: ${direction}`);
 
       // 10. Поиск паттерна входа на 5m
       const signal = this.strategy.findEntryPattern(candles5m, level, direction, dailyLevels);
 
       if (!signal) {
-        logger.debug(`${pair}: нет паттерна входа на 5m для уровня ${level.price.toFixed(2)} (${direction})`);
+        logger.info(`${pair}: нет паттерна на 5m у уровня ${level.price.toFixed(2)} (${direction}) — ожидание`);
         continue;
       }
 
