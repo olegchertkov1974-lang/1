@@ -11,8 +11,8 @@
 const ccxt = require('ccxt');
 const logger = require('./logger');
 
-// User-facing pair names (without settlement suffix)
-const ALLOWED_PAIRS = ['BTC/USDT', 'ETH/USDT', 'SOL/USDT', 'BNB/USDT', 'XRP/USDT'];
+// Список пар определяется в bot.js — здесь ограничений нет
+const ALLOWED_PAIRS = [];
 const ALLOWED_TIMEFRAMES = ['5m', '15m', '1h', '4h', '1d'];
 const MAX_RETRIES = 3;
 const BASE_RETRY_DELAY = 2000; // ms
@@ -57,8 +57,8 @@ class BybitExchange {
    * Validate that a trading pair is allowed.
    */
   validatePair(pair) {
-    if (!ALLOWED_PAIRS.includes(pair)) {
-      throw new Error(`Pair ${pair} is not allowed. Allowed: ${ALLOWED_PAIRS.join(', ')}`);
+    if (!pair || !pair.endsWith('/USDT')) {
+      throw new Error(`Pair ${pair} is not valid. Only USDT pairs are supported.`);
     }
   }
 
