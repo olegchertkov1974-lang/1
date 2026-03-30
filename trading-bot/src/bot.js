@@ -1366,12 +1366,28 @@ class TradingBot {
 
         if (profit >= risk) {
           // 1R достигнут — переносим SL в безубыток
-          pos.stopLoss = pos.entry;
+          // Доп. проверка: SL должен быть на правильной стороне от текущей цены
+          if (pos.side === 'long' && pos.entry >= currentPrice) {
+            logger.debug(`${pair}: 1R был достигнут, но цена вернулась (${currentPrice} < entry ${pos.entry}) — ждём`);
+            continue;
+          }
+          if (pos.side === 'short' && pos.entry <= currentPrice) {
+            logger.debug(`${pair}: 1R был достигнут, но цена вернулась (${currentPrice} > entry ${pos.entry}) — ждём`);
+            continue;
+          }
+
+          // Сначала пробуем обновить на бирже (передаём entry как новый SL)
+          const breakevenSL = pos.entry;
+          try {
+            await this.exchange.setTradingStop(pair, { stopLoss: breakevenSL });
+          } catch (err) {
+            logger.warn(`${pair}: не удалось перенести SL в безубыток: ${err.message} — повторим позже`);
+            continue; // не ставим флаг, попробуем в следующем цикле
+          }
+
+          pos.stopLoss = breakevenSL;
           pos._breakevenMoved = true;
           pos._breakevenMovedAt = new Date().toISOString();
-
-          // Обновляем SL на бирже через setTradingStop
-          await this._updateStopLossOnExchange(pair, pos);
 
           const logMsg =
             `БЕЗУБЫТОК ${pair} ${sideRu}: 1R достигнут | ` +

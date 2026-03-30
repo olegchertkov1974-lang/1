@@ -111,9 +111,13 @@ async function main() {
     console.log(`❌ TP НЕ совпадает! actual=${actualTP} expected=${tpPrice}`);
   }
 
-  // 6. Перенос SL в безубыток (SL = entry)
-  const breakevenSL = Math.round(entryPrice);
-  console.log(`\n─── Шаг 3: Безубыток — SL → ${breakevenSL} (entry) ───`);
+  // 6. Перенос SL в безубыток (SL ближе к текущей цене, но ниже неё для LONG)
+  // Для LONG: SL должен быть НИЖЕ текущей цены. Берём entry - маленький буфер
+  const ticker2 = await ex.fetchTicker(PAIR);
+  const nowPrice = ticker2.last;
+  // Безубыток = чуть ниже текущей цены (чтобы Bybit не отклонил)
+  const breakevenSL = Math.round(Math.min(entryPrice, nowPrice) - 10);
+  console.log(`\n─── Шаг 3: Безубыток — SL → ${breakevenSL} (≈entry, ниже текущей ${nowPrice}) ───`);
 
   await ex.setTradingStop(PAIR, {
     stopLoss: breakevenSL,
