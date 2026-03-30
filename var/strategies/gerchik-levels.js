@@ -603,6 +603,16 @@ class GerchikLevels {
     if (direction === 'long' && pattern.entry > entry) entry = pattern.entry;
     if (direction === 'short' && pattern.entry < entry) entry = pattern.entry;
 
+    // Защита: SL должен быть на правильной стороне от entry
+    if (direction === 'long' && stopLoss >= entry) {
+      // SL выше entry для лонга — невалидный сигнал
+      return null;
+    }
+    if (direction === 'short' && stopLoss <= entry) {
+      // SL ниже entry для шорта — невалидный сигнал
+      return null;
+    }
+
     // TP: на следующем дневном уровне
     let takeProfit = null;
     if (allDailyLevels && allDailyLevels.length > 0) {

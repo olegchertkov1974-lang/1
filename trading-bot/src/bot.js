@@ -1500,6 +1500,16 @@ class TradingBot {
       logger.info(`${pair}: размер уменьшен вдвое (противоречие 4H) → ${sizing.size}`);
     }
 
+    // ── Проверка SL на правильной стороне от entry ──
+    if (entrySignal.signal === 'long' && entrySignal.stopLoss >= entrySignal.entry) {
+      logger.warn(`${pair}: SL ${entrySignal.stopLoss} >= entry ${entrySignal.entry} для LONG — невалидный сигнал, пропуск`);
+      return;
+    }
+    if (entrySignal.signal === 'short' && entrySignal.stopLoss <= entrySignal.entry) {
+      logger.warn(`${pair}: SL ${entrySignal.stopLoss} <= entry ${entrySignal.entry} для SHORT — невалидный сигнал, пропуск`);
+      return;
+    }
+
     // ── Валидация ──
     const order = {
       side: entrySignal.signal,
