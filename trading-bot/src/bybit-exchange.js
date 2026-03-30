@@ -332,21 +332,29 @@ class BybitExchange {
    */
   async setLeverage(pair, leverage = 10) {
     this.validatePair(pair);
-    return this._retry(async () => {
-      const params = {
-        category: 'linear',
-        symbol: pair.replace('/', ''),
-        buyLeverage: String(leverage),
-        sellLeverage: String(leverage),
-      };
-      const response = await this.exchange.privatePostV5PositionSetLeverage(params);
-      const retCode = response?.retCode ?? response?.ret_code;
-      // retCode 110043 = "leverage not modified" — это ОК
-      if (retCode !== undefined && retCode !== 0 && retCode !== 110043) {
-        throw new Error(`setLeverage: retCode=${retCode} msg=${response?.retMsg || '?'}`);
+    try {
+      return await this._retry(async () => {
+        const params = {
+          category: 'linear',
+          symbol: pair.replace('/', ''),
+          buyLeverage: String(leverage),
+          sellLeverage: String(leverage),
+        };
+        const response = await this.exchange.privatePostV5PositionSetLeverage(params);
+        const retCode = response?.retCode ?? response?.ret_code;
+        if (retCode !== undefined && retCode !== 0 && retCode !== 110043) {
+          throw new Error(`setLeverage: retCode=${retCode} msg=${response?.retMsg || '?'}`);
+        }
+        return response;
+      }, `setLeverage(${pair}, ${leverage}x)`);
+    } catch (err) {
+      // 110043 = "leverage not modified" — плечо уже установлено, это ОК
+      if (err.message.includes('110043') || err.message.includes('not modified')) {
+        logger.debug(`setLeverage(${pair}): уже ${leverage}x — ОК`);
+        return null;
       }
-      return response;
-    }, `setLeverage(${pair}, ${leverage}x)`);
+      throw err;
+    }
   }
 
   // ────────────────────────────────────────────────
