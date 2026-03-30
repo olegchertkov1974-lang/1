@@ -196,8 +196,8 @@ class BybitExchange {
       if (opts.takeProfit) {
         params.takeProfit = String(opts.takeProfit);
         params.tpTriggerBy = 'LastPrice';
-        params.tpOrderType = 'Limit';   // Limit TP — maker-комиссия
-        // Для limit TP можно указать limitPrice, но Bybit часто ставит по triggerPrice
+        params.tpOrderType = 'Limit';       // Limit TP — maker-комиссия
+        params.tpLimitPrice = String(opts.takeProfit); // обязательное поле для Limit TP
       }
 
       logger.info(
