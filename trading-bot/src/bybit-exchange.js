@@ -349,6 +349,109 @@ class BybitExchange {
     }, `setLeverage(${pair}, ${leverage}x)`);
   }
 
+  // ────────────────────────────────────────────────
+  //  WebSocket (ccxt.pro) — реалтайм ордера и позиции
+  // ────────────────────────────────────────────────
+
+  /**
+   * Инициализировать WebSocket-подключение (ccxt.pro).
+   * Вызывается один раз при старте бота.
+   */
+  _initWsExchange() {
+    if (this._wsExchange) return;
+
+    const apiKey = process.env.BYBIT_API_KEY;
+    const apiSecret = process.env.BYBIT_API_SECRET;
+    const isDemo = process.env.BYBIT_DEMO === 'true';
+
+    this._wsExchange = new ccxt.pro.bybit({
+      apiKey,
+      secret: apiSecret,
+      enableRateLimit: true,
+      options: {
+        defaultType: 'linear',
+        adjustForTimeDifference: true,
+        enableDemoTrading: isDemo,
+      },
+      timeout: 30000,
+    });
+
+    if (isDemo) {
+      this._wsExchange.urls['api'] = this._wsExchange.urls['demotrading'];
+    } else if (process.env.BYBIT_TESTNET === 'true') {
+      this._wsExchange.setSandboxMode(true);
+    }
+
+    logger.info('Bybit WebSocket: инициализирован');
+  }
+
+  /**
+   * Подписаться на обновления ордеров через WebSocket.
+   * @param {function} callback — (order) => {} вызывается при каждом обновлении ордера
+   */
+  async startOrdersWebSocket(callback) {
+    this._initWsExchange();
+    this._wsOrdersRunning = true;
+    logger.info('Bybit WebSocket: подписка на ордера...');
+
+    while (this._wsOrdersRunning) {
+      try {
+        const orders = await this._wsExchange.watchOrders();
+        for (const order of orders) {
+          try {
+            callback(order);
+          } catch (err) {
+            logger.error(`WS order callback error: ${err.message}`);
+          }
+        }
+      } catch (err) {
+        if (!this._wsOrdersRunning) break;
+        logger.warn(`WS orders error: ${err.message}, reconnecting in 5s...`);
+        await new Promise(r => setTimeout(r, 5000));
+      }
+    }
+  }
+
+  /**
+   * Подписаться на обновления позиций через WebSocket.
+   * @param {function} callback — (positions) => {} вызывается при изменении позиций
+   */
+  async startPositionsWebSocket(callback) {
+    this._initWsExchange();
+    this._wsPositionsRunning = true;
+    logger.info('Bybit WebSocket: подписка на позиции...');
+
+    while (this._wsPositionsRunning) {
+      try {
+        const positions = await this._wsExchange.watchPositions();
+        try {
+          callback(positions);
+        } catch (err) {
+          logger.error(`WS positions callback error: ${err.message}`);
+        }
+      } catch (err) {
+        if (!this._wsPositionsRunning) break;
+        logger.warn(`WS positions error: ${err.message}, reconnecting in 5s...`);
+        await new Promise(r => setTimeout(r, 5000));
+      }
+    }
+  }
+
+  /**
+   * Остановить WebSocket-подписки.
+   */
+  async stopWebSockets() {
+    this._wsOrdersRunning = false;
+    this._wsPositionsRunning = false;
+    if (this._wsExchange) {
+      try {
+        await this._wsExchange.close();
+      } catch (e) { /* ignore */ }
+      this._wsExchange = null;
+    }
+    logger.info('Bybit WebSocket: остановлен');
+  }
+
   /**
    * Получить историю исполнений (execution list) за период.
    * Используется для подсчёта комиссий.

@@ -32,13 +32,18 @@ const PAIRS = [
 const TF_LEVELS = '1d';     // таймфрейм для построения уровней
 const TF_CONFIRM = '4h';    // таймфрейм для подтверждения тренда
 const TF_ENTRY = '5m';      // таймфрейм для паттернов входа
-const POLL_INTERVAL_MS = parseInt(process.env.POLL_INTERVAL_MS, 10) || 60000;
 const VOLUME_THRESHOLD = parseFloat(process.env.VOLUME_THRESHOLD) || 1000000;
 const AI_FILTER_ENABLED = process.env.AI_FILTER_ENABLED !== 'false';
 const AI_MIN_CONFIDENCE = parseInt(process.env.AI_MIN_CONFIDENCE, 10) || 60;
 const ORDER_SAFETY_TTL_MS = 30 * 60 * 1000; // страховочный таймаут 30 мин
 const MAX_ORDER_ATTEMPTS = 2;                // макс попыток на один сетап
 const BREAKEVEN_ENABLED = true;              // перенос SL в безубыток после 1R
+
+// ── Интервалы (мс) ──
+const INTERVAL_1M = 60 * 1000;              // базовый цикл — 1 минута
+const INTERVAL_5M = 5 * 60 * 1000;          // поиск входа — каждые 5 минут
+const INTERVAL_4H = 4 * 60 * 60 * 1000;     // фильтр тренда — каждые 4 часа
+const INTERVAL_1D = 24 * 60 * 60 * 1000;    // уровни — раз в сутки
 
 class TradingBot {
   constructor() {
@@ -59,8 +64,14 @@ class TradingBot {
     this._pendingOrders = new Map(); // orderId -> { pair, position, signal, sizing, createdAt, attempts, level, direction }
     this._orderAttempts = new Map(); // pair -> количество попыток на текущий сетап
     this._dailyLevels = new Map();  // pair -> массив уровней с 1D
-    this._lastLevelUpdate = 0;      // timestamp последнего обновления уровней
     this._lastReportDate = null;    // дата последнего отправленного отчёта (YYYY-MM-DD)
+
+    // ── Расписание задач (timestamp последнего выполнения) ──
+    this._lastLevelUpdate = 0;      // 1D уровни
+    this._last4HUpdate = 0;         // 4H тренд (кэш)
+    this._last5mScan = 0;           // 5m поиск входа
+    this._lastBreakevenCheck = 0;   // безубыток (1m)
+    this._4hTrendCache = new Map(); // pair -> { trend, confirmation, approach, candles, updatedAt }
 
     // Дневная статистика по ордерам (сбрасывается в отчёте)
     this._dayStats = this._loadDayStats();
@@ -73,7 +84,7 @@ class TradingBot {
     logger.info('=== Gerchik Levels Trading Bot starting ===');
     logger.info(`Пары: ${PAIRS.join(', ')}`);
     logger.info(`Таймфреймы: ${TF_LEVELS} (уровни), ${TF_CONFIRM} (тренд), ${TF_ENTRY} (вход)`);
-    logger.info(`Интервал: ${POLL_INTERVAL_MS}мс`);
+    logger.info(`Расписание: 1D раз/сутки | 4H каждые 4ч | 5m каждые 5мин | безубыток 1мин`);
     logger.info(`Мин объём: ${VOLUME_THRESHOLD}`);
     logger.info(`AI фильтр: ${AI_FILTER_ENABLED && this.aiFilter.enabled ? 'ВКЛ' : 'ВЫКЛ'}`);
     logger.info(`n8n webhook: ${this.webhook.n8nWebhookUrl || 'не настроен'}`);
@@ -103,6 +114,7 @@ class TradingBot {
         '🤖 <b>Бот запущен (Герчик)</b>\n' +
         `Пары: ${PAIRS.join(', ')}\n` +
         `ТФ: ${TF_LEVELS} уровни | ${TF_CONFIRM} тренд | ${TF_ENTRY} вход\n` +
+        `Расписание: 1D/сутки | 4H/4ч | 5m/5мин | BE/1мин | WS ордера\n` +
         `AI: ${AI_FILTER_ENABLED && this.aiFilter.enabled ? 'ВКЛ' : 'ВЫКЛ'}\n` +
         `Риск: ${this.riskManager.riskPct}% | Макс 1 позиция на инструмент`
       );
@@ -117,10 +129,24 @@ class TradingBot {
       riskPct: this.riskManager.riskPct,
     });
 
+    // ── Первичная загрузка данных ──
+    logger.info('Первичная загрузка 1D уровней...');
+    await this._updateDailyLevels();
+    this._lastLevelUpdate = Date.now();
+
+    logger.info('Первичная загрузка 4H трендов...');
+    await this._update4HTrends();
+    this._last4HUpdate = Date.now();
+
+    // ── WebSocket для ордеров и позиций ──
+    this._startWebSockets();
+
+    // ── Основной цикл — 1 минута ──
+    logger.info('Основной цикл запущен (интервал 1 мин)');
     while (this.running) {
       if (!this.paused) {
         try {
-          await this._tick();
+          await this._scheduledTick();
         } catch (err) {
           logger.error(`Tick error: ${err.message}`);
           await this.notifier.notifyError(err);
@@ -129,7 +155,148 @@ class TradingBot {
       }
 
       if (this.running) {
-        await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
+        // Ждём до начала следующей минуты (выровнено по часам)
+        const sleepMs = this._msUntilNextMinute();
+        logger.debug(`Сон ${(sleepMs / 1000).toFixed(0)}с до следующей минуты`);
+        await new Promise((r) => setTimeout(r, sleepMs));
+      }
+    }
+  }
+
+  // ────────────────────────────────────────────────
+  //  УТИЛИТЫ РАСПИСАНИЯ
+  // ────────────────────────────────────────────────
+
+  /**
+   * Миллисекунды до начала следующей минуты (+ 2с буфер на закрытие свечи).
+   */
+  _msUntilNextMinute() {
+    const now = Date.now();
+    const nextMin = Math.ceil(now / 60000) * 60000 + 2000; // +2с буфер
+    return Math.max(nextMin - now, 5000); // минимум 5с
+  }
+
+  /**
+   * Проверить, закрылась ли новая 5m свеча с последнего сканирования.
+   */
+  _is5mCandleClosed() {
+    const now = Date.now();
+    const current5mSlot = Math.floor(now / INTERVAL_5M);
+    const last5mSlot = Math.floor(this._last5mScan / INTERVAL_5M);
+    return current5mSlot > last5mSlot;
+  }
+
+  /**
+   * Проверить, закрылась ли новая 4H свеча.
+   * 4H свечи закрываются в 00:00, 04:00, 08:00, 12:00, 16:00, 20:00 UTC.
+   */
+  _is4HCandleClosed() {
+    const now = Date.now();
+    const current4HSlot = Math.floor(now / INTERVAL_4H);
+    const last4HSlot = Math.floor(this._last4HUpdate / INTERVAL_4H);
+    return current4HSlot > last4HSlot;
+  }
+
+  /**
+   * Проверить, наступил ли новый день (для обновления 1D уровней).
+   */
+  _isNewDay() {
+    const now = Date.now();
+    const currentDaySlot = Math.floor(now / INTERVAL_1D);
+    const lastDaySlot = Math.floor(this._lastLevelUpdate / INTERVAL_1D);
+    return currentDaySlot > lastDaySlot;
+  }
+
+  // ────────────────────────────────────────────────
+  //  WebSocket (реалтайм ордера/позиции)
+  // ────────────────────────────────────────────────
+
+  /**
+   * Запустить WebSocket подписки на ордера и позиции.
+   */
+  _startWebSockets() {
+    // WS ордера — обработка fill/cancel в реалтайме
+    this.exchange.startOrdersWebSocket((order) => {
+      this._handleWsOrder(order);
+    }).catch(err => {
+      logger.error(`WS orders fatal: ${err.message}`);
+    });
+
+    // WS позиции — детекция закрытия SL/TP
+    this.exchange.startPositionsWebSocket((positions) => {
+      this._handleWsPositions(positions);
+    }).catch(err => {
+      logger.error(`WS positions fatal: ${err.message}`);
+    });
+
+    logger.info('WebSocket подписки запущены (ордера + позиции)');
+  }
+
+  /**
+   * Обработка WS-события ордера (fill, cancel).
+   */
+  _handleWsOrder(order) {
+    const orderId = order.id;
+    const pending = this._pendingOrders.get(orderId);
+    if (!pending) return; // не наш ордер или уже обработан
+
+    if (order.status === 'closed') {
+      // Ордер исполнен — обрабатываем асинхронно
+      this._onOrderFilled(orderId, pending, order).catch(err => {
+        logger.error(`WS onOrderFilled error: ${err.message}`);
+      });
+    } else if (order.status === 'canceled') {
+      this._pendingOrders.delete(orderId);
+      if (pending.attemptKey) {
+        const attempts = (this._orderAttempts.get(pending.attemptKey) || 0) + 1;
+        this._orderAttempts.set(pending.attemptKey, attempts);
+      }
+      logger.info(`WS: ордер ${orderId} отменён биржей (PostOnly?)`);
+    }
+  }
+
+  /**
+   * Обработка исполненного ордера (вызывается из WS или polling).
+   */
+  async _onOrderFilled(orderId, pending, order) {
+    this._pendingOrders.delete(orderId);
+    this.positions.set(pending.pair, pending.position);
+    this.riskManager.addPosition(pending.position);
+
+    await this._setPositionStopLossAndTakeProfit(pending.pair, pending.position);
+
+    await this.notifier.notifyTrade({
+      ...pending.signal,
+      positionSize: pending.sizing.size,
+      riskAmount: pending.sizing.riskAmount,
+    });
+    await this.webhook.pushToN8n('trade_opened', pending.position);
+    this.trackOrderFilled();
+    logger.info(`Ордер исполнен: ${orderId} — ${pending.pair}`);
+  }
+
+  /**
+   * Обработка WS-события позиций (детекция закрытия по SL/TP).
+   */
+  _handleWsPositions(wsPositions) {
+    if (this.positions.size === 0) return;
+
+    // Создаём Set пар, которые всё ещё открыты на бирже
+    const openPairsOnExchange = new Set();
+    for (const p of wsPositions) {
+      if (Math.abs(p.contracts || 0) > 0) {
+        const pair = p.symbol ? p.symbol.replace(':USDT', '') : '';
+        openPairsOnExchange.add(pair);
+      }
+    }
+
+    // Проверяем, исчезли ли наши позиции
+    for (const [posKey] of this.positions) {
+      const pair = posKey.split(':')[0];
+      if (!openPairsOnExchange.has(pair)) {
+        // Позиция закрыта — обработаем в следующем _detectClosedPositions()
+        // (WS может прийти раньше, чем данные о цене закрытия)
+        logger.info(`WS: позиция ${pair} исчезла с биржи — будет обработана в следующем цикле`);
       }
     }
   }
@@ -351,20 +518,16 @@ class TradingBot {
         // 3. СМЕНА КОНТЕКСТА НА 4H — новая свеча изменила тренд
         //    Если при размещении ордера тренд совпадал, а теперь нет
         if (!cancelReason && pending.direction) {
-          try {
-            const candles4H = await this.exchange.fetchCandles(pending.pair, TF_CONFIRM, 25);
-            if (candles4H && candles4H.length >= 20) {
-              const currentTrend = this.strategy.detectTrend4H(candles4H);
-              const trendConflict =
-                (pending.direction === 'long' && currentTrend === 'down') ||
-                (pending.direction === 'short' && currentTrend === 'up');
+          const cached4H = this._4hTrendCache.get(pending.pair);
+          if (cached4H) {
+            const currentTrend = cached4H.trend;
+            const trendConflict =
+              (pending.direction === 'long' && currentTrend === 'down') ||
+              (pending.direction === 'short' && currentTrend === 'up');
 
-              if (trendConflict) {
-                cancelReason = `Смена контекста 4H: тренд стал ${currentTrend}, конфликтует с ${pending.direction}`;
-              }
+            if (trendConflict) {
+              cancelReason = `Смена контекста 4H: тренд стал ${currentTrend}, конфликтует с ${pending.direction}`;
             }
-          } catch (e) {
-            logger.warn(`Ошибка проверки 4H контекста для ${pending.pair}: ${e.message}`);
           }
         }
 
@@ -879,61 +1042,125 @@ class TradingBot {
     this.notifier.stopPolling();
     this.webhook.stop();
     this.tradeStore.close();
+    this.exchange.stopWebSockets().catch(() => {});
     this.notifier.sendMessage('🛑 <b>Бот остановлен</b>').catch(() => {});
     this.webhook.pushToN8n('bot_stopped', {}).catch(() => {});
   }
 
-  async _tick() {
-    const balance = await this.exchange.fetchBalance();
-    logger.info(`Баланс: ${balance.free} USDT свободно (всего: ${balance.total})`);
+  /**
+   * Основной цикл — выполняется каждую минуту.
+   * Задачи запускаются по расписанию:
+   *   - Каждую минуту: безубыток (если есть позиции), проверка ордеров, детекция закрытий
+   *   - Каждые 5 минут (после закрытия 5m свечи): поиск входа
+   *   - Каждые 4 часа (после закрытия 4H свечи): обновление тренда
+   *   - Раз в сутки (после 00:00 UTC): обновление 1D уровней
+   */
+  async _scheduledTick() {
+    const now = Date.now();
+    const utcTime = new Date().toISOString().slice(11, 16);
 
-    // Инициализация конфига бота (стартовый баланс) при первом тике
-    await this._initBotConfigIfNeeded(balance);
+    // ── Баланс (раз в 5 минут, не каждую минуту) ──
+    let balance = this._cachedBalance;
+    if (!balance || this._is5mCandleClosed()) {
+      balance = await this.exchange.fetchBalance();
+      this._cachedBalance = balance;
+      logger.info(`Баланс: ${balance.free} USDT свободно (всего: ${balance.total})`);
 
-    // Обновить пиковый баланс для расчёта просадки
-    this._updatePeakBalance(balance.total);
+      // Инициализация конфига бота при первом тике
+      await this._initBotConfigIfNeeded(balance);
+      this._updatePeakBalance(balance.total);
 
-    // Установить баланс на начало дня (если ещё не установлен)
-    if (!this._dayStats.balanceStart) {
-      this._dayStats.balanceStart = balance.total;
-      this._saveDayStats();
+      if (!this._dayStats.balanceStart) {
+        this._dayStats.balanceStart = balance.total;
+        this._saveDayStats();
+      }
     }
 
-    // Проверка ежедневного отчёта (17:00 UTC / 20:00 MSK)
+    // ── КАЖДУЮ МИНУТУ ──
+
+    // Проверка ежедневного отчёта (17:00 UTC)
     await this._checkDailyReport();
 
-    // Проверка лимитных ордеров (исполнение / отмена по условиям Герчика)
+    // Проверка лимитных ордеров (fallback к WS — polling на случай пропуска)
     await this._checkPendingOrders();
 
-    // Детекция закрытых позиций на бирже (SL/TP)
+    // Детекция закрытых позиций (SL/TP на бирже)
     await this._detectClosedPositions();
 
-    // Перенос SL в безубыток после 1R
-    if (BREAKEVEN_ENABLED) {
+    // Безубыток — каждую минуту если есть позиции
+    if (BREAKEVEN_ENABLED && this.positions.size > 0) {
       await this._checkBreakeven();
+      this._lastBreakevenCheck = now;
     }
 
-    // Обновление дневных уровней (раз в 4 часа — не чаще)
-    const now = Date.now();
-    if (now - this._lastLevelUpdate > 4 * 60 * 60 * 1000) {
+    // ── РАЗ В СУТКИ: 1D уровни (после 00:00 UTC) ──
+    if (this._isNewDay()) {
+      logger.info(`[${utcTime}] ═══ Обновление 1D уровней (новый день) ═══`);
       await this._updateDailyLevels();
       this._lastLevelUpdate = now;
     }
 
-    // Мультитаймфреймовый анализ по каждой паре
-    for (const pair of PAIRS) {
-      try {
-        await this._processPairGerchik(pair, balance);
-      } catch (err) {
-        logger.error(`Ошибка ${pair}: ${err.message}`);
-      }
+    // ── КАЖДЫЕ 4 ЧАСА: тренд 4H (после закрытия 4H свечи) ──
+    if (this._is4HCandleClosed()) {
+      logger.info(`[${utcTime}] ═══ Обновление 4H трендов (закрытие 4H свечи) ═══`);
+      await this._update4HTrends();
+      this._last4HUpdate = now;
     }
 
-    await this.webhook.pushToN8n('tick_complete', {
-      balance,
-      openPositions: this.positions.size,
-      timestamp: new Date().toISOString(),
-    });
+    // ── КАЖДЫЕ 5 МИНУТ: поиск входа на 5m (после закрытия 5m свечи) ──
+    if (this._is5mCandleClosed()) {
+      logger.info(`[${utcTime}] ─── Сканирование 5m входов (закрытие 5m свечи) ───`);
+      this._last5mScan = now;
+
+      for (const pair of PAIRS) {
+        try {
+          await this._processPairGerchik(pair, balance);
+        } catch (err) {
+          logger.error(`Ошибка ${pair}: ${err.message}`);
+        }
+      }
+
+      await this.webhook.pushToN8n('tick_complete', {
+        balance,
+        openPositions: this.positions.size,
+        timestamp: new Date().toISOString(),
+      });
+    } else {
+      // Не 5m граница — логируем что ждём
+      const msTo5m = INTERVAL_5M - (now % INTERVAL_5M);
+      const secTo5m = Math.round(msTo5m / 1000);
+      logger.debug(`[${utcTime}] Ожидание закрытия 5m свечи через ${secTo5m}с | позиций: ${this.positions.size} | ордеров: ${this._pendingOrders.size}`);
+    }
+  }
+
+  /**
+   * Обновить 4H тренды для всех пар (кэш).
+   */
+  async _update4HTrends() {
+    let updated = 0;
+    for (const pair of PAIRS) {
+      try {
+        const candles4H = await this.exchange.fetchCandles(pair, TF_CONFIRM, 50);
+        if (!candles4H || candles4H.length < 20) {
+          logger.warn(`${pair}: недостаточно 4H свечей (${candles4H?.length || 0})`);
+          continue;
+        }
+
+        const trend = this.strategy.detectTrend4H(candles4H);
+
+        this._4hTrendCache.set(pair, {
+          trend,
+          candles: candles4H,
+          updatedAt: Date.now(),
+        });
+        updated++;
+
+        logger.info(`${pair}: 4H тренд = ${trend}`);
+      } catch (err) {
+        logger.error(`${pair}: ошибка обновления 4H тренда: ${err.message}`);
+      }
+    }
+    logger.info(`4H тренды обновлены: ${updated}/${PAIRS.length} пар`);
   }
 
   /**
@@ -1009,12 +1236,13 @@ class TradingBot {
       return;
     }
 
-    // 5. Получаем 4H свечи для подтверждения тренда
-    const candles4H = await this.exchange.fetchCandles(pair, TF_CONFIRM, 50);
-    if (!candles4H || candles4H.length < 20) {
-      logger.debug(`${pair}: недостаточно 4H свечей`);
+    // 5. Получаем 4H данные из кэша (обновляются каждые 4H)
+    const cached4H = this._4hTrendCache.get(pair);
+    if (!cached4H || !cached4H.candles || cached4H.candles.length < 20) {
+      logger.debug(`${pair}: нет 4H данных в кэше`);
       return;
     }
+    const candles4H = cached4H.candles;
 
     // 6. Получаем 5m свечи для поиска паттерна входа
     const candles5m = await this.exchange.fetchCandles(pair, TF_ENTRY, 50);
