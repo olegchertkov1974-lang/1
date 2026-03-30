@@ -113,6 +113,20 @@ class TelegramNotifier {
       await this._cmdStatus();
     } else if (cmd === '/positions') {
       await this._cmdPositions();
+    } else if (cmd === '/levels') {
+      await this._cmdLevels();
+    } else if (cmd === '/orders') {
+      await this._cmdOrders();
+    } else if (cmd === '/balance') {
+      await this._cmdBalance();
+    } else if (cmd === '/report') {
+      await this._cmdReport();
+    } else if (cmd === '/history') {
+      await this._cmdHistory();
+    } else if (cmd === '/logs') {
+      await this._cmdLogs();
+    } else if (cmd === '/settings') {
+      await this._cmdSettings();
     } else if (cmd === '/stop') {
       await this._cmdStop();
     } else if (cmd === '/close_all') {
@@ -136,6 +150,22 @@ class TelegramNotifier {
       await this._cmdStatus();
     } else if (data === 'positions') {
       await this._cmdPositions();
+    } else if (data === 'levels') {
+      await this._cmdLevels();
+    } else if (data === 'orders') {
+      await this._cmdOrders();
+    } else if (data === 'balance') {
+      await this._cmdBalance();
+    } else if (data === 'report') {
+      await this._cmdReport();
+    } else if (data === 'history') {
+      await this._cmdHistory();
+    } else if (data === 'logs') {
+      await this._cmdLogs();
+    } else if (data === 'settings') {
+      await this._cmdSettings();
+    } else if (data === 'refresh_levels') {
+      await this._cmdRefreshLevels();
     } else if (data === 'close_all') {
       await this._sendConfirm('close_all_confirm', '⚠️ Закрыть ВСЕ позиции?');
     } else if (data === 'close_all_confirm') {
@@ -151,7 +181,6 @@ class TelegramNotifier {
     } else if (data === 'force_scan') {
       await this._cmdForceScan();
     } else if (data.startsWith('close_')) {
-      // close_BTC/USDT:15m
       const posKey = data.replace('close_', '');
       if (posKey.endsWith('_confirm')) {
         await this._cmdClosePosition(posKey.replace('_confirm', ''));
@@ -169,6 +198,22 @@ class TelegramNotifier {
         [
           { text: '📊 Статус', callback_data: 'status' },
           { text: '📋 Позиции', callback_data: 'positions' },
+        ],
+        [
+          { text: '📈 Уровни', callback_data: 'levels' },
+          { text: '⏳ Ордера', callback_data: 'orders' },
+        ],
+        [
+          { text: '💰 Баланс', callback_data: 'balance' },
+          { text: '📊 Отчёт', callback_data: 'report' },
+        ],
+        [
+          { text: '📋 История', callback_data: 'history' },
+          { text: '📝 Логи', callback_data: 'logs' },
+        ],
+        [
+          { text: '⚙️ Настройки', callback_data: 'settings' },
+          { text: '🔄 Обновить уровни', callback_data: 'refresh_levels' },
         ],
         [
           { text: '⏸ Пауза', callback_data: 'pause' },
@@ -348,6 +393,162 @@ class TelegramNotifier {
     try {
       await this._bot._tick();
       await this.sendMessage('✅ Сканирование завершено');
+    } catch (err) {
+      await this.sendMessage(`❌ Ошибка: ${err.message}`);
+    }
+  }
+
+  // ─── New command handlers ───
+
+  async _cmdLevels() {
+    if (!this._bot) return;
+    const dailyLevels = this._bot._dailyLevels;
+    if (!dailyLevels || dailyLevels.size === 0) {
+      await this._sendWithKeyboard('📈 <b>Уровни ещё не загружены</b>', { inline_keyboard: [[{ text: '🔄 Обновить', callback_data: 'refresh_levels' }, { text: '◀️ Меню', callback_data: 'menu' }]] });
+      return;
+    }
+
+    let msg = '📈 <b>Уровни 1D по парам</b>\n\n';
+    let count = 0;
+    for (const [pair, data] of dailyLevels) {
+      if (!data.levels || data.levels.length === 0) continue;
+      const top3 = data.levels.slice(0, 3);
+      msg += `<b>${pair}</b> (${data.levels.length} ур.)\n`;
+      for (const l of top3) {
+        const typeIcon = l.isMirror ? '🪞' : l.hasFalseBreakout ? '💥' : '📊';
+        msg += `  ${typeIcon} ${l.price.toFixed(2)} | ${l.classification} | сила: ${l.strength}\n`;
+      }
+      msg += '\n';
+      count++;
+      if (count >= 10) { msg += `<i>...и ещё ${dailyLevels.size - 10} пар</i>\n`; break; }
+    }
+
+    await this._sendWithKeyboard(msg, { inline_keyboard: [[{ text: '🔄 Обновить', callback_data: 'refresh_levels' }, { text: '◀️ Меню', callback_data: 'menu' }]] });
+  }
+
+  async _cmdOrders() {
+    if (!this._bot) return;
+    const pending = this._bot._pendingOrders;
+    if (!pending || pending.size === 0) {
+      await this._sendWithKeyboard('⏳ <b>Нет активных ордеров</b>', { inline_keyboard: [[{ text: '◀️ Меню', callback_data: 'menu' }]] });
+      return;
+    }
+
+    let msg = '⏳ <b>Активные лимитные ордера</b>\n\n';
+    for (const [orderId, p] of pending) {
+      const sideIcon = p.direction === 'long' ? '🟢' : '🔴';
+      const sideRu = p.direction === 'long' ? 'ЛОНГ' : 'ШОРТ';
+      const waitMin = Math.floor((Date.now() - p.createdAt) / 60000);
+      msg += `${sideIcon} <b>${sideRu}</b> ${p.pair}\n`;
+      msg += `  Вход: <code>${p.signal?.entry || '?'}</code>\n`;
+      msg += `  Уровень: <code>${p.level?.price?.toFixed(2) || '?'}</code>\n`;
+      msg += `  Ожидание: ${waitMin} мин\n`;
+      msg += `  ID: <code>${orderId}</code>\n\n`;
+    }
+
+    await this._sendWithKeyboard(msg, { inline_keyboard: [[{ text: '◀️ Меню', callback_data: 'menu' }]] });
+  }
+
+  async _cmdBalance() {
+    if (!this._bot) return;
+    try {
+      const balance = await this._bot.exchange.fetchBalance();
+      const msg = `💰 <b>Баланс</b>\n\n` +
+        `Всего: <code>${balance.total.toFixed(2)} USDT</code>\n` +
+        `Свободно: <code>${balance.free.toFixed(2)} USDT</code>\n` +
+        `В марже: <code>${(balance.total - balance.free).toFixed(2)} USDT</code>`;
+      await this._sendWithKeyboard(msg, { inline_keyboard: [[{ text: '◀️ Меню', callback_data: 'menu' }]] });
+    } catch (err) {
+      await this.sendMessage(`❌ ${err.message}`);
+    }
+  }
+
+  async _cmdReport() {
+    if (!this._bot) return;
+    try {
+      await this.sendMessage('📊 <b>Генерация отчёта...</b>');
+      const today = new Date().toISOString().slice(0, 10);
+      await this._bot._generateAndSendDailyReport(today);
+    } catch (err) {
+      await this.sendMessage(`❌ Ошибка отчёта: ${err.message}`);
+    }
+  }
+
+  async _cmdHistory() {
+    if (!this._bot) return;
+    const trades = this._bot.tradeStore.getRecentTrades(10);
+    if (!trades || trades.length === 0) {
+      await this._sendWithKeyboard('📋 <b>Нет закрытых сделок</b>', { inline_keyboard: [[{ text: '◀️ Меню', callback_data: 'menu' }]] });
+      return;
+    }
+
+    let msg = '📋 <b>Последние 10 сделок</b>\n\n';
+    for (const t of trades) {
+      const icon = (t.pnl || 0) > 0 ? '✅' : (t.pnl || 0) < 0 ? '❌' : '⬜';
+      const sideRu = t.side === 'long' ? 'L' : 'S';
+      const closeRu = { tp: 'TP', sl: 'SL', breakeven: 'BE' }[t.close_type] || t.close_type || '?';
+      msg += `${icon} ${sideRu} <b>${t.pair}</b> | ${closeRu} | ` +
+        `<code>${(t.pnl || 0) >= 0 ? '+' : ''}${(t.pnl || 0).toFixed(2)} USDT</code> | ` +
+        `R:R ${t.realized_rr || '?'}\n`;
+    }
+
+    await this._sendWithKeyboard(msg, { inline_keyboard: [[{ text: '◀️ Меню', callback_data: 'menu' }]] });
+  }
+
+  async _cmdLogs() {
+    if (!this._bot) return;
+    try {
+      const fs = require('fs');
+      const path = require('path');
+      const logPath = path.resolve(__dirname, '..', 'logs', 'bot.log');
+      let lines = [];
+      if (fs.existsSync(logPath)) {
+        const content = fs.readFileSync(logPath, 'utf8');
+        lines = content.split('\n').filter(Boolean).slice(-20);
+      }
+      if (lines.length === 0) {
+        await this.sendMessage('📝 <b>Логи пусты</b>');
+        return;
+      }
+      const msg = '📝 <b>Последние 20 строк лога</b>\n\n<code>' +
+        lines.map(l => l.slice(0, 100)).join('\n') + '</code>';
+      await this._sendWithKeyboard(msg, { inline_keyboard: [[{ text: '◀️ Меню', callback_data: 'menu' }]] });
+    } catch (err) {
+      await this.sendMessage(`📝 <b>Логи недоступны</b>\n${err.message}`);
+    }
+  }
+
+  async _cmdSettings() {
+    if (!this._bot) return;
+    const rm = this._bot.riskManager;
+    const pairs = this._bot._dailyLevels ? this._bot._dailyLevels.size : 0;
+    const leverage = process.env.LEVERAGE || '10';
+    const msg = '⚙️ <b>Настройки бота</b>\n\n' +
+      `Пар: <code>${pairs}</code>\n` +
+      `ТФ уровней: <code>1D</code>\n` +
+      `ТФ тренда: <code>4H</code>\n` +
+      `ТФ входа: <code>5m</code>\n` +
+      `Риск на сделку: <code>${rm.riskPct}%</code>\n` +
+      `Мин R:R: <code>1:${rm.minRR}</code>\n` +
+      `Макс позиций: <code>${rm.maxConcurrent}</code>\n` +
+      `Плечо: <code>${leverage}x</code>\n` +
+      `AI фильтр: <code>${process.env.AI_FILTER_ENABLED !== 'false' ? 'ВКЛ' : 'ВЫКЛ'}</code>\n` +
+      `Мин AI уверенность: <code>${process.env.AI_MIN_CONFIDENCE || 60}%</code>\n` +
+      `Интервал: <code>${process.env.POLL_INTERVAL_MS || 60000}мс</code>\n` +
+      `Безубыток: <code>ВКЛ (после 1R)</code>`;
+    await this._sendWithKeyboard(msg, { inline_keyboard: [[{ text: '◀️ Меню', callback_data: 'menu' }]] });
+  }
+
+  async _cmdRefreshLevels() {
+    if (!this._bot) return;
+    await this.sendMessage('🔄 <b>Обновление уровней...</b>');
+    try {
+      this._bot._lastLevelUpdate = 0; // сбросить таймер
+      await this._bot._updateDailyLevels();
+      this._bot._lastLevelUpdate = Date.now();
+      let total = 0;
+      for (const [, data] of this._bot._dailyLevels) total += data.levels.length;
+      await this.sendMessage(`✅ Уровни обновлены: ${total} по ${this._bot._dailyLevels.size} парам`);
     } catch (err) {
       await this.sendMessage(`❌ Ошибка: ${err.message}`);
     }

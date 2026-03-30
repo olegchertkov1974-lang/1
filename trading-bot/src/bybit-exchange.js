@@ -328,6 +328,28 @@ class BybitExchange {
   }
 
   /**
+   * Установить плечо для пары.
+   */
+  async setLeverage(pair, leverage = 10) {
+    this.validatePair(pair);
+    return this._retry(async () => {
+      const params = {
+        category: 'linear',
+        symbol: pair.replace('/', ''),
+        buyLeverage: String(leverage),
+        sellLeverage: String(leverage),
+      };
+      const response = await this.exchange.privatePostV5PositionSetLeverage(params);
+      const retCode = response?.retCode ?? response?.ret_code;
+      // retCode 110043 = "leverage not modified" — это ОК
+      if (retCode !== undefined && retCode !== 0 && retCode !== 110043) {
+        throw new Error(`setLeverage: retCode=${retCode} msg=${response?.retMsg || '?'}`);
+      }
+      return response;
+    }, `setLeverage(${pair}, ${leverage}x)`);
+  }
+
+  /**
    * Получить историю исполнений (execution list) за период.
    * Используется для подсчёта комиссий.
    * @param {string} startTime — ISO timestamp

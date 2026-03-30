@@ -90,6 +90,9 @@ class TradingBot {
     // Sync open positions from Bybit
     await this._syncPositionsFromExchange();
 
+    // Установить плечо 10x на все пары
+    await this._setLeverageAll();
+
     // Graceful shutdown
     const shutdown = () => this.stop();
     process.on('SIGINT', shutdown);
@@ -204,6 +207,30 @@ class TradingBot {
     } catch (err) {
       logger.error(`Failed to sync positions: ${err.message}`);
     }
+  }
+
+  /**
+   * Установить плечо 10x на все пары при старте.
+   */
+  async _setLeverageAll() {
+    const leverage = parseInt(process.env.LEVERAGE, 10) || 10;
+    logger.info(`Установка плеча ${leverage}x на ${PAIRS.length} пар...`);
+    let ok = 0, fail = 0;
+    for (const pair of PAIRS) {
+      try {
+        await this.exchange.setLeverage(pair, leverage);
+        ok++;
+      } catch (err) {
+        // 110043 = leverage not modified — OK
+        if (!err.message.includes('110043')) {
+          logger.warn(`setLeverage(${pair}): ${err.message}`);
+          fail++;
+        } else {
+          ok++;
+        }
+      }
+    }
+    logger.info(`Плечо ${leverage}x установлено: ${ok} ок, ${fail} ошибок`);
   }
 
   /**
