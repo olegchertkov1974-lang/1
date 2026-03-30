@@ -53,8 +53,9 @@ class GerchikLevels {
         if (k === i) continue;
         const kbh = Math.max(dailyCandles[k].open, dailyCandles[k].close);
         const kbl = Math.min(dailyCandles[k].open, dailyCandles[k].close);
-        if (kbh >= bodyHigh) isBodyHigh = false;
-        if (kbl <= bodyLow) isBodyLow = false;
+        // Строго >: равные значения (gapless данные) не блокируют пивот
+        if (kbh > bodyHigh) isBodyHigh = false;
+        if (kbl < bodyLow) isBodyLow = false;
       }
 
       if (isBodyHigh) pivots.push({ price: bodyHigh, type: 'high', index: i });
