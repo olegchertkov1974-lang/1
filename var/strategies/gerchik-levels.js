@@ -53,78 +53,106 @@ class GerchikLevels {
       const nextBodyLow = Math.min(dailyCandles[i + 1].open, dailyCandles[i + 1].close);
       const isBodyLow = bodyLow < prevBodyLow && bodyLow < nextBodyLow;
 
-      if (isBodyHigh) pivots.push({ price: bodyHigh, type: 'high', index: i, candle: c });
-      if (isBodyLow) pivots.push({ price: bodyLow, type: 'low', index: i, candle: c });
+      if (isBodyHigh) pivots.push({ price: bodyHigh, type: 'high', index: i });
+      if (isBodyLow) pivots.push({ price: bodyLow, type: 'low', index: i });
     }
 
-    // Кластеризация пивотов в уровни
+    // Для каждого пивота считаем ВСЕ касания тел свечей в зоне (не только другие пивоты)
+    // Это ключевое отличие — уровень подтверждается реакцией цены, а не только разворотами
     const levels = [];
-    const used = new Set();
+    const usedPivots = new Set();
+
+    // Сначала кластеризуем близкие пивоты, чтобы не дублировать уровни
+    const pivotClusters = [];
+    const pivotUsed = new Set();
 
     for (let i = 0; i < pivots.length; i++) {
-      if (used.has(i)) continue;
-
+      if (pivotUsed.has(i)) continue;
       const cluster = [pivots[i]];
-      used.add(i);
+      pivotUsed.add(i);
 
       for (let j = i + 1; j < pivots.length; j++) {
-        if (used.has(j)) continue;
+        if (pivotUsed.has(j)) continue;
         const diff = Math.abs(pivots[i].price - pivots[j].price) / pivots[i].price;
         if (diff <= LEVEL_ZONE_PCT / 100) {
           cluster.push(pivots[j]);
-          used.add(j);
+          pivotUsed.add(j);
+        }
+      }
+      pivotClusters.push(cluster);
+    }
+
+    for (const cluster of pivotClusters) {
+      const avgPrice = cluster.reduce((s, p) => s + p.price, 0) / cluster.length;
+      const zone = avgPrice * (LEVEL_ZONE_PCT / 100);
+      const hasHighs = cluster.some((p) => p.type === 'high');
+      const hasLows = cluster.some((p) => p.type === 'low');
+
+      // Считаем ВСЕ свечи, чьи тела касаются зоны уровня
+      let touches = 0;
+      let lastTouchIndex = 0;
+      let firstTouchIndex = dailyCandles.length;
+      const touchPrices = [];
+
+      for (let i = 0; i < dailyCandles.length; i++) {
+        const c = dailyCandles[i];
+        const bodyHigh = Math.max(c.open, c.close);
+        const bodyLow = Math.min(c.open, c.close);
+
+        // Тело свечи касается зоны уровня (тело пересекает зону или находится на границе)
+        if (bodyLow <= avgPrice + zone && bodyHigh >= avgPrice - zone) {
+          touches++;
+          touchPrices.push(bodyHigh, bodyLow);
+          if (i > lastTouchIndex) lastTouchIndex = i;
+          if (i < firstTouchIndex) firstTouchIndex = i;
         }
       }
 
-      if (cluster.length >= LEVEL_TOUCH_MIN) {
-        const avgPrice = cluster.reduce((s, p) => s + p.price, 0) / cluster.length;
-        const hasHighs = cluster.some((p) => p.type === 'high');
-        const hasLows = cluster.some((p) => p.type === 'low');
+      // Уровень должен иметь минимум LEVEL_TOUCH_MIN касаний
+      if (touches < LEVEL_TOUCH_MIN) continue;
 
-        // Определяем ширину зоны по разбросу тел
-        const prices = cluster.map((p) => p.price);
-        const zoneHigh = Math.max(...prices);
-        const zoneLow = Math.min(...prices);
+      const zoneHigh = Math.max(...cluster.map(p => p.price), avgPrice + zone * 0.5);
+      const zoneLow = Math.min(...cluster.map(p => p.price), avgPrice - zone * 0.5);
 
-        const level = {
-          price: parseFloat(avgPrice.toFixed(8)),
-          zoneHigh: parseFloat(zoneHigh.toFixed(8)),
-          zoneLow: parseFloat(zoneLow.toFixed(8)),
-          touches: cluster.length,
-          lastTouchIndex: Math.max(...cluster.map((p) => p.index)),
-          firstTouchIndex: Math.min(...cluster.map((p) => p.index)),
-          isMirror: hasHighs && hasLows,
-          hasFalseBreakout: false,
-          hasLongWicks: false,
-          isRoundNumber: false,
-          strength: 0,
-          classification: '',
-          type: hasHighs && hasLows ? 'dual' : hasHighs ? 'resistance' : 'support',
-        };
+      const level = {
+        price: parseFloat(avgPrice.toFixed(8)),
+        zoneHigh: parseFloat(zoneHigh.toFixed(8)),
+        zoneLow: parseFloat(zoneLow.toFixed(8)),
+        touches,
+        pivotCount: cluster.length,
+        lastTouchIndex,
+        firstTouchIndex,
+        isMirror: hasHighs && hasLows,
+        hasFalseBreakout: false,
+        hasLongWicks: false,
+        isRoundNumber: false,
+        strength: 0,
+        classification: '',
+        type: hasHighs && hasLows ? 'dual' : hasHighs ? 'resistance' : 'support',
+      };
 
-        // Проверяем ложный пробой
-        level.hasFalseBreakout = this._detectFalseBreakout(dailyCandles, level);
+      // Проверяем ложный пробой
+      level.hasFalseBreakout = this._detectFalseBreakout(dailyCandles, level);
 
-        // Проверяем длинные хвосты от уровня
-        level.hasLongWicks = this._detectLongWicks(dailyCandles, level);
+      // Проверяем длинные хвосты от уровня
+      level.hasLongWicks = this._detectLongWicks(dailyCandles, level);
 
-        // Проверяем круглое число
-        level.isRoundNumber = this._isRoundNumber(level.price);
+      // Проверяем круглое число
+      level.isRoundNumber = this._isRoundNumber(level.price);
 
-        // Классификация
-        level.classification = this._classifyLevel(level);
+      // Классификация
+      level.classification = this._classifyLevel(level);
 
-        // Оценка силы
-        level.strength = this._scoreLevel(level, dailyCandles);
+      // Оценка силы
+      level.strength = this._scoreLevel(level, dailyCandles);
 
-        levels.push(level);
-      }
+      levels.push(level);
     }
 
     // Сортировка по силе (сильнейшие первые)
     levels.sort((a, b) => b.strength - a.strength);
 
-    // Фильтруем слабые уровни (сила < 2) и изношенные
+    // Фильтруем слабые уровни (сила < 2)
     return levels.filter((l) => l.strength >= 2);
   }
 
