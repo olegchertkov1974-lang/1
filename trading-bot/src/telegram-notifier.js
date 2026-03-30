@@ -500,7 +500,7 @@ class TelegramNotifier {
     try {
       const fs = require('fs');
       const path = require('path');
-      const logPath = path.resolve(__dirname, '..', 'logs', 'bot.log');
+      const logPath = path.resolve(__dirname, '..', 'logs', 'trading-bot.log');
       let lines = [];
       if (fs.existsSync(logPath)) {
         const content = fs.readFileSync(logPath, 'utf8');
