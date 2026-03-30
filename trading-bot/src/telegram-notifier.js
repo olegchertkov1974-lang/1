@@ -529,6 +529,72 @@ class TelegramNotifier {
       logger.error(`Failed to send daily summary: ${e.message}`);
     }
   }
+
+  /**
+   * Отправить полный ежедневный финансовый отчёт.
+   */
+  async sendDailyReport(report) {
+    const r = report;
+    const sign = (v) => v >= 0 ? `+${v.toFixed(2)}` : v.toFixed(2);
+    const pct = (v) => v >= 0 ? `+${v.toFixed(2)}%` : `${v.toFixed(2)}%`;
+
+    const msg =
+      `📊 <b>ЕЖЕДНЕВНЫЙ ФИНАНСОВЫЙ ОТЧЁТ</b>\n` +
+      `📅 ${r.date}\n` +
+      `━━━━━━━━━━━━━━━━━━━━\n\n` +
+
+      `💰 <b>1. Баланс</b>\n` +
+      `├ Текущий: <code>${r.balance.current.toFixed(2)} USDT</code>\n` +
+      `├ На начало дня: <code>${r.balance.dayStart.toFixed(2)} USDT</code>\n` +
+      `└ Изменение: <code>${sign(r.balance.change)} USDT (${pct(r.balance.changePct)})</code>\n\n` +
+
+      `📈 <b>2. Сделки за день</b>\n` +
+      `├ Открыто: ${r.trades.opened}\n` +
+      `├ Закрыто: ${r.trades.closed}\n` +
+      `├ По тейку: ✅ ${r.trades.tp}\n` +
+      `├ По стопу: ❌ ${r.trades.sl}\n` +
+      `├ В безубыток: ⬜ ${r.trades.be}\n` +
+      `└ P&L: <code>${sign(r.trades.pnl)} USDT</code>\n\n` +
+
+      `💸 <b>3. Комиссии</b>\n` +
+      `├ Всего: <code>${r.fees.total.toFixed(4)} USDT</code>\n` +
+      `├ Maker (лимитки): <code>${r.fees.maker.toFixed(4)} USDT</code>\n` +
+      `└ Taker (стопы): <code>${r.fees.taker.toFixed(4)} USDT</code>\n\n` +
+
+      `📋 <b>4. Ордера</b>\n` +
+      `├ Выставлено: ${r.orders.placed}\n` +
+      `├ Исполнено: ${r.orders.filled}\n` +
+      `├ Отменено: ${r.orders.cancelled}\n` +
+      `│  ├ Пробой уровня: ${r.orders.cancelReasons.levelBreak}\n` +
+      `│  ├ Таймаут 30мин: ${r.orders.cancelReasons.timeout}\n` +
+      `│  └ Смена контекста: ${r.orders.cancelReasons.contextChange}\n\n` +
+
+      `🏆 <b>5. Итого за день</b>\n` +
+      `├ Чистый P&L: <code>${sign(r.daily.netPnl)} USDT</code>\n` +
+      `├ Винрейт: <code>${r.daily.winRate}%</code>\n` +
+      `└ Средний R:R: <code>${r.daily.avgRR}</code>\n\n` +
+
+      `📊 <b>6. Накопительная статистика</b>\n` +
+      `   (с ${r.cumulative.startDate})\n` +
+      `├ Дней тестирования: ${r.cumulative.days}\n` +
+      `├ Стартовый баланс: <code>${r.cumulative.startBalance.toFixed(2)} USDT</code>\n` +
+      `├ Текущий баланс: <code>${r.cumulative.currentBalance.toFixed(2)} USDT</code>\n` +
+      `├ Общий P&L: <code>${sign(r.cumulative.totalPnl)} USDT (${pct(r.cumulative.totalPnlPct)})</code>\n` +
+      `├ Всего сделок: ${r.cumulative.totalTrades} (открыто: ${r.cumulative.openPositions})\n` +
+      `├ Винрейт: <code>${r.cumulative.winRate}%</code>\n` +
+      `├ Средний R:R: <code>${r.cumulative.avgRR}</code>\n` +
+      `├ Макс просадка: <code>${r.cumulative.maxDrawdown.toFixed(2)}%</code>\n` +
+      `├ Общие комиссии: <code>${r.cumulative.totalFees.toFixed(4)} USDT</code>\n` +
+      `├ 🟢 Лучшая: <code>${sign(r.cumulative.bestTrade)} USDT</code>\n` +
+      `├ 🔴 Худшая: <code>${sign(r.cumulative.worstTrade)} USDT</code>\n` +
+      `└ Сделок/день: <code>${r.cumulative.tradesPerDay.toFixed(1)}</code>`;
+
+    try {
+      await this.sendMessage(msg);
+    } catch (e) {
+      logger.error(`Failed to send daily report: ${e.message}`);
+    }
+  }
 }
 
 module.exports = TelegramNotifier;

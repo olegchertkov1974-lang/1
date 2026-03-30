@@ -145,6 +145,26 @@ class TradeStore {
     return row;
   }
 
+  /**
+   * Получить сделки за указанный день (YYYY-MM-DD).
+   */
+  getTradesToday(dateStr) {
+    if (!this.db) {
+      return this.trades.filter(t => (t.closedAt || '').startsWith(dateStr));
+    }
+    return this.db.prepare(
+      `SELECT * FROM trades WHERE closed_at >= ? AND closed_at < date(?, '+1 day') ORDER BY id`
+    ).all(dateStr, dateStr);
+  }
+
+  /**
+   * Все сделки (для накопительной статистики).
+   */
+  getAllTrades() {
+    if (!this.db) return [...this.trades];
+    return this.db.prepare('SELECT * FROM trades ORDER BY id').all();
+  }
+
   close() {
     if (this.db) this.db.close();
   }

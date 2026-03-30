@@ -325,6 +325,38 @@ class BybitExchange {
   getAllowedTimeframes() {
     return [...ALLOWED_TIMEFRAMES];
   }
+
+  /**
+   * Получить историю исполнений (execution list) за период.
+   * Используется для подсчёта комиссий.
+   * @param {string} startTime — ISO timestamp
+   * @param {string} endTime — ISO timestamp
+   */
+  async fetchExecutions(startTime, endTime) {
+    return this._retry(async () => {
+      const params = {
+        category: 'linear',
+        limit: 100,
+      };
+      if (startTime) params.startTime = String(new Date(startTime).getTime());
+      if (endTime) params.endTime = String(new Date(endTime).getTime());
+
+      const response = await this.exchange.privateGetV5ExecutionList(params);
+      const list = response?.result?.list || [];
+      return list.map(e => ({
+        symbol: e.symbol,
+        side: e.side,
+        execType: e.execType,
+        execQty: parseFloat(e.execQty || '0'),
+        execPrice: parseFloat(e.execPrice || '0'),
+        execFee: parseFloat(e.execFee || '0'),
+        feeRate: parseFloat(e.feeRate || '0'),
+        isMaker: e.isMaker === 'true' || e.isMaker === true,
+        execTime: parseInt(e.execTime || '0'),
+        orderId: e.orderId,
+      }));
+    }, 'fetchExecutions');
+  }
 }
 
 module.exports = BybitExchange;

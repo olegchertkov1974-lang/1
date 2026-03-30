@@ -10,6 +10,8 @@
 
 require('dotenv').config({ path: require('path').resolve(__dirname, '..', '.env') });
 
+const fs = require('fs');
+const path = require('path');
 const GerchikLevels = require('../../var/strategies/gerchik-levels');
 const BybitExchange = require('./bybit-exchange');
 const RiskManager = require('./risk-manager');
@@ -58,6 +60,13 @@ class TradingBot {
     this._orderAttempts = new Map(); // pair -> количество попыток на текущий сетап
     this._dailyLevels = new Map();  // pair -> массив уровней с 1D
     this._lastLevelUpdate = 0;      // timestamp последнего обновления уровней
+    this._lastReportDate = null;    // дата последнего отправленного отчёта (YYYY-MM-DD)
+
+    // Дневная статистика по ордерам (сбрасывается в отчёте)
+    this._dayStats = this._loadDayStats();
+
+    // Конфиг бота (стартовый баланс, дата начала — не перезаписывается)
+    this._botConfig = this._loadBotConfig();
   }
 
   async start() {
@@ -230,6 +239,7 @@ class TradingBot {
             riskAmount: pending.sizing.riskAmount,
           });
           await this.webhook.pushToN8n('trade_opened', pending.position);
+          this.trackOrderFilled();
           logger.info(`Ордер исполнен: ${orderId} — ${pending.pair}`);
           continue;
         }
@@ -382,6 +392,13 @@ class TradingBot {
             `Уровень: <code>${pending.level ? pending.level.price.toFixed(2) : '?'}</code>\n\n` +
             `Причина: ${cancelReason}`
           );
+          // Трекинг причин отмены для отчёта
+          if (cancelReason.includes('Пробой уровня')) this.trackOrderCancelled('level_break');
+          else if (cancelReason.includes('таймаут')) this.trackOrderCancelled('timeout');
+          else if (cancelReason.includes('контекст')) this.trackOrderCancelled('context_change');
+          else if (cancelReason.includes('Противоположный')) this.trackOrderCancelled('opposite_signal');
+          else this.trackOrderCancelled('other');
+
           logger.info(`Ордер ${orderId} отменён: ${cancelReason}`);
         }
       } catch (err) {
@@ -562,6 +579,273 @@ class TradingBot {
     }
   }
 
+  // ────────────────────────────────────────────────
+  //  ДНЕВНОЙ ФИНАНСОВЫЙ ОТЧЁТ
+  // ────────────────────────────────────────────────
+
+  _getBotConfigPath() {
+    return path.resolve(__dirname, '..', 'data', 'bot-config.json');
+  }
+
+  _getDayStatsPath() {
+    return path.resolve(__dirname, '..', 'data', 'day-stats.json');
+  }
+
+  _loadBotConfig() {
+    const cfgPath = this._getBotConfigPath();
+    try {
+      if (fs.existsSync(cfgPath)) {
+        return JSON.parse(fs.readFileSync(cfgPath, 'utf8'));
+      }
+    } catch (e) {
+      logger.warn(`Ошибка чтения bot-config.json: ${e.message}`);
+    }
+    return null; // будет инициализирован при первом тике
+  }
+
+  _saveBotConfig(config) {
+    const cfgPath = this._getBotConfigPath();
+    const dir = path.dirname(cfgPath);
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(cfgPath, JSON.stringify(config, null, 2));
+    this._botConfig = config;
+  }
+
+  _loadDayStats() {
+    const p = this._getDayStatsPath();
+    try {
+      if (fs.existsSync(p)) {
+        return JSON.parse(fs.readFileSync(p, 'utf8'));
+      }
+    } catch (e) { /* ignore */ }
+    return this._emptyDayStats();
+  }
+
+  _saveDayStats() {
+    const p = this._getDayStatsPath();
+    const dir = path.dirname(p);
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(p, JSON.stringify(this._dayStats, null, 2));
+  }
+
+  _emptyDayStats() {
+    return {
+      date: new Date().toISOString().slice(0, 10),
+      balanceStart: 0,
+      ordersPlaced: 0,
+      ordersFilled: 0,
+      ordersCancelled: 0,
+      cancelReasons: { levelBreak: 0, timeout: 0, contextChange: 0, oppositeSignal: 0 },
+      totalFees: 0,
+      makerFees: 0,
+      takerFees: 0,
+    };
+  }
+
+  /**
+   * Инициализация конфига при первом запуске (сохраняет стартовый баланс).
+   */
+  async _initBotConfigIfNeeded(balance) {
+    if (this._botConfig) return;
+
+    const config = {
+      startDate: '2026-03-30',
+      startBalance: balance.total,
+      peakBalance: balance.total,
+      totalFees: 0,
+    };
+    this._saveBotConfig(config);
+    logger.info(`Bot config initialized: startBalance=${config.startBalance}, startDate=${config.startDate}`);
+  }
+
+  /**
+   * Обновить пиковый баланс (для расчёта просадки).
+   */
+  _updatePeakBalance(currentBalance) {
+    if (!this._botConfig) return;
+    if (currentBalance > this._botConfig.peakBalance) {
+      this._botConfig.peakBalance = currentBalance;
+      this._saveBotConfig(this._botConfig);
+    }
+  }
+
+  /**
+   * Трекинг ордеров для дневного отчёта.
+   */
+  trackOrderPlaced() {
+    this._dayStats.ordersPlaced++;
+    this._saveDayStats();
+  }
+
+  trackOrderFilled() {
+    this._dayStats.ordersFilled++;
+    this._saveDayStats();
+  }
+
+  trackOrderCancelled(reason) {
+    this._dayStats.ordersCancelled++;
+    if (reason === 'level_break') this._dayStats.cancelReasons.levelBreak++;
+    else if (reason === 'timeout') this._dayStats.cancelReasons.timeout++;
+    else if (reason === 'context_change') this._dayStats.cancelReasons.contextChange++;
+    else if (reason === 'opposite_signal') this._dayStats.cancelReasons.oppositeSignal++;
+    this._saveDayStats();
+  }
+
+  /**
+   * Проверить, пора ли отправить ежедневный отчёт (17:00 UTC).
+   */
+  async _checkDailyReport() {
+    const now = new Date();
+    const utcHour = now.getUTCHours();
+    const utcMinute = now.getUTCMinutes();
+    const todayStr = now.toISOString().slice(0, 10);
+
+    // Отправляем отчёт в 17:00-17:01 UTC (20:00 по Москве)
+    if (utcHour === 17 && utcMinute < 2 && this._lastReportDate !== todayStr) {
+      this._lastReportDate = todayStr;
+      try {
+        await this._generateAndSendDailyReport(todayStr);
+      } catch (err) {
+        logger.error(`Ошибка ежедневного отчёта: ${err.message}`);
+      }
+    }
+  }
+
+  /**
+   * Генерация и отправка ежедневного отчёта.
+   */
+  async _generateAndSendDailyReport(dateStr) {
+    logger.info('Генерация ежедневного отчёта...');
+
+    const balance = await this.exchange.fetchBalance();
+    const currentBalance = balance.total;
+
+    // Баланс на начало дня
+    const dayStart = this._dayStats.balanceStart || currentBalance;
+
+    // Сделки за день из БД
+    const todayTrades = this.tradeStore.getTradesToday(dateStr);
+    const closedTrades = todayTrades.filter(t => t.exit_price);
+    const openedTrades = todayTrades;
+
+    let tp = 0, sl = 0, be = 0, totalPnl = 0;
+    let rrValues = [];
+    for (const t of closedTrades) {
+      const pnl = t.pnl || 0;
+      totalPnl += pnl;
+      if (t.close_type === 'tp') tp++;
+      else if (t.close_type === 'sl') sl++;
+      else if (t.close_type === 'breakeven') be++;
+      if (t.realized_rr) rrValues.push(parseFloat(t.realized_rr));
+    }
+    const wins = closedTrades.filter(t => (t.pnl || 0) > 0).length;
+    const winRate = closedTrades.length > 0 ? ((wins / closedTrades.length) * 100).toFixed(1) : '0.0';
+    const avgRR = rrValues.length > 0
+      ? (rrValues.reduce((s, v) => s + v, 0) / rrValues.length).toFixed(2)
+      : '—';
+
+    // Комиссии из Bybit execution list
+    let fees = { total: 0, maker: 0, taker: 0 };
+    try {
+      const startOfDay = `${dateStr}T00:00:00Z`;
+      const endOfDay = `${dateStr}T23:59:59Z`;
+      const executions = await this.exchange.fetchExecutions(startOfDay, endOfDay);
+      for (const e of executions) {
+        const fee = Math.abs(e.execFee);
+        fees.total += fee;
+        if (e.isMaker) fees.maker += fee;
+        else fees.taker += fee;
+      }
+    } catch (err) {
+      logger.warn(`Не удалось получить комиссии: ${err.message}`);
+      fees = { total: this._dayStats.totalFees, maker: this._dayStats.makerFees, taker: this._dayStats.takerFees };
+    }
+
+    // Накопительная статистика
+    const allTrades = this.tradeStore.getAllTrades();
+    const allClosed = allTrades.filter(t => t.exit_price);
+    const allWins = allClosed.filter(t => (t.pnl || 0) > 0).length;
+    const allPnl = allClosed.reduce((s, t) => s + (t.pnl || 0), 0);
+    const allRR = allClosed
+      .filter(t => t.realized_rr)
+      .map(t => parseFloat(t.realized_rr));
+    const allAvgRR = allRR.length > 0
+      ? (allRR.reduce((s, v) => s + v, 0) / allRR.length).toFixed(2)
+      : '—';
+
+    const startDate = this._botConfig?.startDate || '2026-03-30';
+    const startBalance = this._botConfig?.startBalance || currentBalance;
+    const peakBalance = this._botConfig?.peakBalance || currentBalance;
+    const drawdown = peakBalance > 0 ? ((peakBalance - currentBalance) / peakBalance * 100) : 0;
+    const daysSinceStart = Math.max(1, Math.ceil((Date.now() - new Date(startDate).getTime()) / (24 * 60 * 60 * 1000)));
+
+    const bestTrade = allClosed.length > 0
+      ? Math.max(...allClosed.map(t => t.pnl || 0))
+      : 0;
+    const worstTrade = allClosed.length > 0
+      ? Math.min(...allClosed.map(t => t.pnl || 0))
+      : 0;
+
+    // Сохраняем общие комиссии в конфиг
+    if (this._botConfig) {
+      this._botConfig.totalFees = (this._botConfig.totalFees || 0) + fees.total;
+      this._saveBotConfig(this._botConfig);
+    }
+
+    const report = {
+      date: dateStr,
+      balance: {
+        current: currentBalance,
+        dayStart: dayStart,
+        change: currentBalance - dayStart,
+        changePct: dayStart > 0 ? ((currentBalance - dayStart) / dayStart * 100) : 0,
+      },
+      trades: {
+        opened: openedTrades.length,
+        closed: closedTrades.length,
+        tp, sl, be,
+        pnl: totalPnl,
+      },
+      fees,
+      orders: {
+        placed: this._dayStats.ordersPlaced,
+        filled: this._dayStats.ordersFilled,
+        cancelled: this._dayStats.ordersCancelled,
+        cancelReasons: { ...this._dayStats.cancelReasons },
+      },
+      daily: {
+        netPnl: totalPnl - fees.total,
+        winRate,
+        avgRR,
+      },
+      cumulative: {
+        startDate,
+        days: daysSinceStart,
+        startBalance,
+        currentBalance,
+        totalPnl: currentBalance - startBalance,
+        totalPnlPct: startBalance > 0 ? ((currentBalance - startBalance) / startBalance * 100) : 0,
+        totalTrades: allTrades.length,
+        openPositions: this.positions.size,
+        winRate: allClosed.length > 0 ? ((allWins / allClosed.length) * 100).toFixed(1) : '0.0',
+        avgRR: allAvgRR,
+        maxDrawdown: drawdown,
+        totalFees: this._botConfig?.totalFees || fees.total,
+        bestTrade,
+        worstTrade,
+        tradesPerDay: allTrades.length / daysSinceStart,
+      },
+    };
+
+    await this.notifier.sendDailyReport(report);
+    logger.info(`Ежедневный отчёт за ${dateStr} отправлен`);
+
+    // Сбрасываем дневные счётчики
+    this._dayStats = this._emptyDayStats();
+    this._dayStats.balanceStart = currentBalance; // баланс на начало следующего дня
+    this._saveDayStats();
+  }
+
   stop() {
     logger.info('Bot stopping...');
     this.running = false;
@@ -575,6 +859,21 @@ class TradingBot {
   async _tick() {
     const balance = await this.exchange.fetchBalance();
     logger.info(`Баланс: ${balance.free} USDT свободно (всего: ${balance.total})`);
+
+    // Инициализация конфига бота (стартовый баланс) при первом тике
+    await this._initBotConfigIfNeeded(balance);
+
+    // Обновить пиковый баланс для расчёта просадки
+    this._updatePeakBalance(balance.total);
+
+    // Установить баланс на начало дня (если ещё не установлен)
+    if (!this._dayStats.balanceStart) {
+      this._dayStats.balanceStart = balance.total;
+      this._saveDayStats();
+    }
+
+    // Проверка ежедневного отчёта (17:00 UTC / 20:00 MSK)
+    await this._checkDailyReport();
 
     // Проверка лимитных ордеров (исполнение / отмена по условиям Герчика)
     await this._checkPendingOrders();
@@ -1010,6 +1309,7 @@ class TradingBot {
 
       // Limit ордер — ждём исполнения
       if (result.status === 'open' || result.type === 'limit') {
+        this.trackOrderPlaced();
         this._pendingOrders.set(result.id, {
           pair,
           position,
