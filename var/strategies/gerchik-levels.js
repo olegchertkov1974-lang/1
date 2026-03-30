@@ -163,19 +163,20 @@ class GerchikLevels {
   _classifyLevel(level) {
     if (level.isMirror) return 'mirror';           // Зеркальный — самый сильный
     if (level.hasFalseBreakout) return 'false_breakout'; // С ложным пробоем
-    if (level.touches >= 3) return 'multi_touch';  // Мульти-тач
-    return 'standard';                              // Стандартный (2 касания)
+    if (level.pivotCount >= 3) return 'multi_touch';  // Мульти-тач
+    return 'standard';                              // Стандартный
   }
 
   _scoreLevel(level, dailyCandles) {
     let score = 0;
 
-    // Базовый балл за касания (2 = +2, 3 = +3, но >4 — ослабление)
-    if (level.touches <= 3) {
-      score += level.touches;
+    // Базовый балл за пивоты (не за все касания — касания считают все свечи в зоне)
+    const pivots = level.pivotCount || 1;
+    if (pivots <= 3) {
+      score += pivots + 1; // 1 пивот = +2, 2 = +3, 3 = +4
     } else {
-      score += 3; // 3 — максимум, дальше износ
-      score -= (level.touches - 3); // штраф за каждое касание свыше 3
+      score += 4; // 4 — максимум, дальше износ
+      score -= (pivots - 3); // штраф за каждый пивот свыше 3
     }
 
     // Зеркальность: +3
