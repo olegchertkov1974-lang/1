@@ -37,21 +37,25 @@ class GerchikLevels {
 
     const pivots = [];
 
-    // Ищем развороты по ТЕЛАМ свечей (сравнение с 1 соседом с каждой стороны)
-    for (let i = 1; i < dailyCandles.length - 1; i++) {
+    // Ищем развороты по ТЕЛАМ свечей.
+    // Окно = 3 свечи с каждой стороны — нужно из-за "связных" данных
+    // (open[i] == close[i-1]), из-за чего строгое сравнение с 1 соседом даёт 0 пивотов.
+    const WIN = 3;
+    for (let i = WIN; i < dailyCandles.length - WIN; i++) {
       const c = dailyCandles[i];
       const bodyHigh = Math.max(c.open, c.close);
       const bodyLow = Math.min(c.open, c.close);
 
-      // Локальный максимум по телу (выше соседей)
-      const prevBodyHigh = Math.max(dailyCandles[i - 1].open, dailyCandles[i - 1].close);
-      const nextBodyHigh = Math.max(dailyCandles[i + 1].open, dailyCandles[i + 1].close);
-      const isBodyHigh = bodyHigh > prevBodyHigh && bodyHigh > nextBodyHigh;
-
-      // Локальный минимум по телу (ниже соседей)
-      const prevBodyLow = Math.min(dailyCandles[i - 1].open, dailyCandles[i - 1].close);
-      const nextBodyLow = Math.min(dailyCandles[i + 1].open, dailyCandles[i + 1].close);
-      const isBodyLow = bodyLow < prevBodyLow && bodyLow < nextBodyLow;
+      // Максимум body high в окне [i-WIN .. i+WIN]
+      let isBodyHigh = true;
+      let isBodyLow = true;
+      for (let k = i - WIN; k <= i + WIN; k++) {
+        if (k === i) continue;
+        const kbh = Math.max(dailyCandles[k].open, dailyCandles[k].close);
+        const kbl = Math.min(dailyCandles[k].open, dailyCandles[k].close);
+        if (kbh >= bodyHigh) isBodyHigh = false;
+        if (kbl <= bodyLow) isBodyLow = false;
+      }
 
       if (isBodyHigh) pivots.push({ price: bodyHigh, type: 'high', index: i });
       if (isBodyLow) pivots.push({ price: bodyLow, type: 'low', index: i });
