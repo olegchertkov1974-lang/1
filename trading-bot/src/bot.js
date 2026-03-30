@@ -693,6 +693,15 @@ class TradingBot {
 
     const currentPrice = candles5m[candles5m.length - 1].close;
 
+    // Логируем ближайший уровень для наглядности
+    if (dailyLevels.length > 0) {
+      const nearest = dailyLevels.reduce((best, l) =>
+        Math.abs(l.price - currentPrice) < Math.abs(best.price - currentPrice) ? l : best
+      );
+      const nearDist = ((currentPrice - nearest.price) / nearest.price * 100).toFixed(2);
+      logger.info(`${pair}: цена ${currentPrice.toFixed(2)}, ближайший уровень ${nearest.price.toFixed(2)} (${nearDist}%), всего уровней: ${dailyLevels.length}`);
+    }
+
     // 7. Ищем ближайший активный уровень к текущей цене
     for (const level of dailyLevels) {
       // Фильтр: изношенный уровень (4+ касаний за последние дни)
