@@ -504,15 +504,80 @@ class TelegramNotifier {
       let lines = [];
       if (fs.existsSync(logPath)) {
         const content = fs.readFileSync(logPath, 'utf8');
-        lines = content.split('\n').filter(Boolean).slice(-20);
+        lines = content.split('\n').filter(Boolean).slice(-30);
       }
       if (lines.length === 0) {
         await this.sendMessage('📝 <b>Логи пусты</b>');
         return;
       }
-      const msg = '📝 <b>Последние 20 строк лога</b>\n\n<code>' +
-        lines.map(l => l.slice(0, 100)).join('\n') + '</code>';
-      await this._sendWithKeyboard(msg, { inline_keyboard: [[{ text: '◀️ Меню', callback_data: 'menu' }]] });
+
+      // Форматируем логи для читаемости
+      const formatted = lines.map(line => {
+        // Извлекаем время (HH:MM) и сообщение
+        const timeMatch = line.match(/T(\d{2}:\d{2})/);
+        const time = timeMatch ? timeMatch[1] : '';
+        // Убираем timestamp и [INFO]/[WARN]/[ERROR]
+        let msg = line.replace(/\[[\d\-T:.Z]+\]\s*/, '').replace(/\[(INFO|DEBUG)\]\s*/, '').trim();
+
+        // Подсветка ключевых событий
+        if (line.includes('[ERROR]')) {
+          msg = line.replace(/\[[\d\-T:.Z]+\]\s*/, '').replace(/\[ERROR\]\s*/, '').trim();
+          return `❌ <b>${time}</b> ${msg}`;
+        }
+        if (line.includes('[WARN]')) {
+          msg = line.replace(/\[[\d\-T:.Z]+\]\s*/, '').replace(/\[WARN\]\s*/, '').trim();
+          return `⚠️ <b>${time}</b> ${msg}`;
+        }
+        if (line.includes('СИГНАЛ')) {
+          return `🎯 <b>${time}</b> ${msg}`;
+        }
+        if (line.includes('нет паттерна')) {
+          // Извлекаем пару и уровень
+          const pairMatch = msg.match(/^(\w+\/\w+)/);
+          const pair = pairMatch ? pairMatch[1] : '';
+          const lvlMatch = msg.match(/уровня ([\d.]+)/);
+          const lvl = lvlMatch ? lvlMatch[1] : '';
+          const dirMatch = msg.match(/\((long|short)\)/);
+          const dir = dirMatch ? (dirMatch[1] === 'long' ? '🟢' : '🔴') : '';
+          return `🔍 <b>${time} ${pair}</b> ${dir} ждёт паттерн у ${lvl}`;
+        }
+        if (line.includes('в зоне!')) {
+          const pairMatch = msg.match(/^(\w+\/\w+)/);
+          const pair = pairMatch ? pairMatch[1] : '';
+          return `📍 <b>${time} ${pair}</b> в зоне уровня`;
+        }
+        if (line.includes('AI') && line.includes('REJECTED') || line.includes('отклонил')) {
+          return `🤖 <b>${time}</b> ${msg}`;
+        }
+        if (line.includes('Ордер исполнен') || line.includes('БЕЗУБЫТОК')) {
+          return `✅ <b>${time}</b> ${msg}`;
+        }
+        if (line.includes('Сканирование 5m')) {
+          return `\n⏰ <b>${time} ─── 5m скан ───</b>`;
+        }
+        if (line.includes('Баланс:')) {
+          return `💰 <b>${time}</b> ${msg}`;
+        }
+        // Пропускаем малоинформативные строки
+        if (line.includes('ближайший уровень')) {
+          const pairMatch = msg.match(/^(\w+\/\w+)/);
+          const pair = pairMatch ? pairMatch[1] : '';
+          const priceMatch = msg.match(/цена ([\d.]+)/);
+          const price = priceMatch ? priceMatch[1] : '';
+          const lvlMatch = msg.match(/уровень ([\d.]+)/);
+          const lvl = lvlMatch ? lvlMatch[1] : '';
+          const distMatch = msg.match(/\(([\-\d.]+%)\)/);
+          const dist = distMatch ? distMatch[1] : '';
+          return `  ${pair}: ${price} → ${lvl} (${dist})`;
+        }
+
+        return `  ${time} ${msg}`;
+      });
+
+      const msg = '📝 <b>Лог</b>\n\n' + formatted.join('\n');
+      // Telegram limit 4096 chars
+      const trimmed = msg.length > 4000 ? msg.slice(0, 4000) + '...' : msg;
+      await this._sendWithKeyboard(trimmed, { inline_keyboard: [[{ text: '◀️ Меню', callback_data: 'menu' }]] });
     } catch (err) {
       await this.sendMessage(`📝 <b>Логи недоступны</b>\n${err.message}`);
     }
