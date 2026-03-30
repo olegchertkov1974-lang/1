@@ -178,14 +178,19 @@ class BybitExchange {
    */
   async setTradingStop(pair, opts = {}) {
     this.validatePair(pair);
-    const symbol = this._toLinear(pair);
+    const rawSymbol = pair.replace('/', '');  // BTCUSDT
 
+    // Шаг 1: установить режим TP/SL = Full (обязательно перед tpOrderType/slOrderType)
+    if (opts.takeProfit) {
+      await this._setTpSlMode(rawSymbol, 'Full');
+    }
+
+    // Шаг 2: установить SL/TP
     return this._retry(async () => {
       const params = {
         category: 'linear',
-        symbol: pair.replace('/', ''),  // BTCUSDT
+        symbol: rawSymbol,
         positionIdx: 0,                 // one-way mode
-        tpSlMode: 'Full',               // обязательно для tpOrderType/slOrderType
       };
 
       if (opts.stopLoss) {
@@ -217,6 +222,32 @@ class BybitExchange {
       logger.info(`setTradingStop ${pair}: OK`);
       return response;
     }, `setTradingStop(${pair})`);
+  }
+
+  /**
+   * Установить режим TP/SL (Full или Partial) через /v5/position/set-tpsl-mode.
+   * Bybit требует этот вызов до использования tpOrderType в trading-stop.
+   */
+  async _setTpSlMode(rawSymbol, mode = 'Full') {
+    try {
+      const response = await this.exchange.privatePostV5PositionSetTpslMode({
+        category: 'linear',
+        symbol: rawSymbol,
+        tpSlMode: mode,
+      });
+      const retCode = response?.retCode ?? response?.ret_code;
+      // 130125 = "tpSlMode is not modified" — уже установлен, OK
+      if (retCode !== undefined && retCode !== 0 && retCode !== 130125) {
+        logger.warn(`_setTpSlMode(${rawSymbol}): retCode=${retCode} msg=${response?.retMsg || '?'}`);
+      } else {
+        logger.debug(`_setTpSlMode(${rawSymbol}): ${mode} OK`);
+      }
+    } catch (err) {
+      // 130125 = already set — not an error
+      if (!err.message.includes('130125') && !err.message.includes('not modified')) {
+        logger.warn(`_setTpSlMode(${rawSymbol}): ${err.message}`);
+      }
+    }
   }
 
   /**
