@@ -1376,10 +1376,13 @@ class TradingBot {
             continue;
           }
 
-          // Сначала пробуем обновить на бирже (передаём entry как новый SL)
+          // Сначала пробуем обновить на бирже (передаём entry как новый SL + текущий TP)
+          // ВАЖНО: Bybit сбрасывает TP если не передать его вместе с SL
           const breakevenSL = pos.entry;
           try {
-            await this.exchange.setTradingStop(pair, { stopLoss: breakevenSL });
+            const tpOpts = { stopLoss: breakevenSL };
+            if (pos.takeProfit) tpOpts.takeProfit = pos.takeProfit;
+            await this.exchange.setTradingStop(pair, tpOpts);
           } catch (err) {
             logger.warn(`${pair}: не удалось перенести SL в безубыток: ${err.message} — повторим позже`);
             continue; // не ставим флаг, попробуем в следующем цикле
@@ -1448,10 +1451,10 @@ class TradingBot {
    */
   async _updateStopLossOnExchange(pair, pos) {
     try {
-      await this.exchange.setTradingStop(pair, {
-        stopLoss: pos.stopLoss,
-        // TP не меняем — оставляем существующий
-      });
+      // ВАЖНО: Bybit сбрасывает TP если не передать его вместе с SL
+      const opts = { stopLoss: pos.stopLoss };
+      if (pos.takeProfit) opts.takeProfit = pos.takeProfit;
+      await this.exchange.setTradingStop(pair, opts);
       logger.info(`${pair}: SL обновлён на ${pos.stopLoss} (безубыток) через setTradingStop`);
     } catch (err) {
       logger.warn(`${pair}: не удалось обновить SL на бирже: ${err.message}`);

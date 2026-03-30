@@ -119,9 +119,10 @@ async function main() {
   const breakevenSL = Math.round(Math.min(entryPrice, nowPrice) - 10);
   console.log(`\n─── Шаг 3: Безубыток — SL → ${breakevenSL} (≈entry, ниже текущей ${nowPrice}) ───`);
 
+  // ВАЖНО: передаём и TP, иначе Bybit его сбросит!
   await ex.setTradingStop(PAIR, {
     stopLoss: breakevenSL,
-    // TP не трогаем
+    takeProfit: tpPrice,
   });
   console.log(`✅ setTradingStop (безубыток) вызван`);
 
