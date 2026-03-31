@@ -263,19 +263,27 @@ class BybitExchange {
 
   /**
    * Get open positions.
+   * Без аргумента — запрашивает ВСЕ позиции через Bybit unified account API.
+   * С аргументом — запрашивает конкретную пару.
    */
   async fetchOpenPositions(pair) {
     return this._retry(async () => {
-      const pairs = pair ? [pair] : ALLOWED_PAIRS;
       let allPositions = [];
 
-      // Bybit requires fetching positions one pair at a time
-      for (const p of pairs) {
+      if (pair) {
+        // Конкретная пара
         try {
-          const positions = await this.exchange.fetchPositions([this._toLinear(p)]);
-          allPositions = allPositions.concat(positions);
+          const positions = await this.exchange.fetchPositions([this._toLinear(pair)]);
+          allPositions = positions;
         } catch (err) {
-          logger.warn(`fetchOpenPositions(${p}): ${err.message}`);
+          logger.warn(`fetchOpenPositions(${pair}): ${err.message}`);
+        }
+      } else {
+        // ВСЕ позиции — без фильтра по парам
+        try {
+          allPositions = await this.exchange.fetchPositions();
+        } catch (err) {
+          logger.warn(`fetchOpenPositions(all): ${err.message}`);
         }
       }
 

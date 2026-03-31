@@ -269,6 +269,7 @@ class TradingBot {
       ...pending.signal,
       positionSize: pending.sizing.size,
       riskAmount: pending.sizing.riskAmount,
+      riskPct: pending.sizing.riskPct,
     });
     await this.webhook.pushToN8n('trade_opened', pending.position);
     this.trackOrderFilled();
@@ -431,6 +432,7 @@ class TradingBot {
             ...pending.signal,
             positionSize: pending.sizing.size,
             riskAmount: pending.sizing.riskAmount,
+            riskPct: pending.sizing.riskPct,
           });
           await this.webhook.pushToN8n('trade_opened', pending.position);
           this.trackOrderFilled();
@@ -1638,6 +1640,7 @@ class TradingBot {
         ...entrySignal,
         positionSize: sizing.size,
         riskAmount: sizing.riskAmount,
+        riskPct: sizing.riskPct,
       });
       await this.webhook.pushToN8n('trade_opened', position);
       logger.info(`${pair}: ${entrySignal.signal} вход — ${entrySignal.reason}`);
