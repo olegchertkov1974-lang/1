@@ -184,7 +184,7 @@ class BybitExchange {
       const params = {
         category: 'linear',
         symbol: rawSymbol,
-        positionIdx: 0,                 // one-way mode
+        positionIdx: 0,
       };
 
       if (opts.stopLoss) {
@@ -197,20 +197,26 @@ class BybitExchange {
         params.tpTriggerBy = 'LastPrice';
       }
 
-      logger.info(
-        `setTradingStop ${pair}: ` +
-        `SL=${opts.stopLoss || '—'} TP=${opts.takeProfit || '—'}`
-      );
+      logger.info(`setTradingStop ${pair}: SL=${opts.stopLoss || '—'} TP=${opts.takeProfit || '—'}`);
 
-      const response = await this.exchange.privatePostV5PositionTradingStop(params);
-      const retCode = Number(response?.retCode ?? response?.ret_code ?? 0);
+      try {
+        const response = await this.exchange.privatePostV5PositionTradingStop(params);
+        const retCode = Number(response?.retCode ?? response?.ret_code ?? 0);
 
-      if (retCode !== 0) {
-        throw new Error(`setTradingStop: retCode=${retCode} msg=${response?.retMsg || response?.ret_msg || '?'}`);
+        if (retCode !== 0) {
+          throw new Error(`setTradingStop: retCode=${retCode} msg=${response?.retMsg || response?.ret_msg || '?'}`);
+        }
+
+        logger.info(`setTradingStop ${pair}: OK`);
+        return response;
+      } catch (err) {
+        // "zero position" / "not modified" — позиция уже закрыта или SL/TP уже установлены
+        if (err.message.includes('zero position') || err.message.includes('not modified')) {
+          logger.warn(`setTradingStop ${pair}: ${err.message} (позиция закрыта или SL/TP уже установлены)`);
+          return null;
+        }
+        throw err;
       }
-
-      logger.info(`setTradingStop ${pair}: OK`);
-      return response;
     }, `setTradingStop(${pair})`);
   }
 

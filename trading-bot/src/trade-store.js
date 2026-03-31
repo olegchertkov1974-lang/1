@@ -90,6 +90,8 @@ class TradeStore {
       { col: 'exit_reason', sql: 'ALTER TABLE trades ADD COLUMN exit_reason TEXT' },
       { col: 'duration', sql: 'ALTER TABLE trades ADD COLUMN duration TEXT' },
       { col: 'opened_at', sql: 'ALTER TABLE trades ADD COLUMN opened_at TEXT' },
+      { col: 'realized_rr', sql: 'ALTER TABLE trades ADD COLUMN realized_rr TEXT' },
+      { col: 'close_type', sql: 'ALTER TABLE trades ADD COLUMN close_type TEXT' },
     ];
 
     for (const m of migrations) {
