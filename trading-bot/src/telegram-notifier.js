@@ -107,6 +107,12 @@ class TelegramNotifier {
   async _handleCommand(text, chatId) {
     const cmd = text.trim().toLowerCase();
 
+    // Обработка нажатия постоянной кнопки "📋 Меню" (ReplyKeyboard)
+    if (cmd === '📋 меню' || cmd === '📋меню') {
+      await this._sendMainMenu();
+      return;
+    }
+
     if (cmd === '/start' || cmd === '/menu' || cmd === '/help') {
       await this._sendMainMenu();
     } else if (cmd === '/status') {
@@ -229,7 +235,28 @@ class TelegramNotifier {
       ],
     };
 
+    // Отправляем inline-меню
     await this._sendWithKeyboard('🤖 <b>Gerchik Bot — Управление</b>\n\nВыберите действие:', keyboard);
+
+    // Устанавливаем постоянную кнопку "📋 Меню" внизу чата (если ещё не установлена)
+    if (!this._persistentKbSet) {
+      await this._setPersistentKeyboard();
+    }
+  }
+
+  /**
+   * Установить постоянную кнопку "📋 Меню" внизу чата.
+   */
+  async _setPersistentKeyboard() {
+    if (!this.enabled) return;
+    const payload = JSON.stringify({
+      chat_id: this.chatId,
+      text: '⌨️ Кнопка «Меню» установлена внизу чата',
+      parse_mode: 'HTML',
+      reply_markup: this._persistentKeyboard(),
+    });
+    await this._apiRequest('sendMessage', payload);
+    this._persistentKbSet = true;
   }
 
   async _sendConfirm(confirmAction, text) {
@@ -621,6 +648,17 @@ class TelegramNotifier {
 
   // ─── Core API methods ───
 
+  /**
+   * Постоянная клавиатура внизу чата (ReplyKeyboardMarkup).
+   */
+  _persistentKeyboard() {
+    return {
+      keyboard: [[{ text: '📋 Меню' }]],
+      resize_keyboard: true,
+      is_persistent: true,
+    };
+  }
+
   async sendMessage(text) {
     if (!this.enabled) return;
 
@@ -629,6 +667,7 @@ class TelegramNotifier {
       text,
       parse_mode: 'HTML',
       disable_web_page_preview: true,
+      reply_markup: this._persistentKeyboard(),
     });
 
     return this._apiRequest('sendMessage', payload);
