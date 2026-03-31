@@ -335,8 +335,8 @@ class BybitExchange {
    */
   async setLeverage(pair, leverage = 10) {
     this.validatePair(pair);
-    try {
-      return await this._retry(async () => {
+    return this._retry(async () => {
+      try {
         const params = {
           category: 'linear',
           symbol: pair.replace('/', ''),
@@ -349,15 +349,14 @@ class BybitExchange {
           throw new Error(`setLeverage: retCode=${retCode} msg=${response?.retMsg || '?'}`);
         }
         return response;
-      }, `setLeverage(${pair}, ${leverage}x)`);
-    } catch (err) {
-      // 110043 = "leverage not modified" — плечо уже установлено, это ОК
-      if (err.message.includes('110043') || err.message.includes('not modified')) {
-        logger.debug(`setLeverage(${pair}): уже ${leverage}x — ОК`);
-        return null;
+      } catch (err) {
+        // 110043 = "leverage not modified" — плечо уже установлено, не ошибка
+        if (err.message.includes('110043') || err.message.includes('not modified')) {
+          return null;
+        }
+        throw err;
       }
-      throw err;
-    }
+    }, `setLeverage(${pair}, ${leverage}x)`);
   }
 
   // ────────────────────────────────────────────────

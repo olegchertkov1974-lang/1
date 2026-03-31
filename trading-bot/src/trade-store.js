@@ -67,7 +67,41 @@ class TradeStore {
       CREATE INDEX IF NOT EXISTS idx_trades_closed ON trades(closed_at);
     `);
 
+    // Миграция: добавить столбцы, которых нет в старых БД
+    this._migrate();
+
     logger.info(`TradeStore: database at ${DB_PATH}`);
+  }
+
+  /**
+   * Автомиграция: добавляет отсутствующие столбцы.
+   */
+  _migrate() {
+    const columns = this.db.pragma('table_info(trades)').map(c => c.name);
+
+    const migrations = [
+      { col: 'original_sl', sql: 'ALTER TABLE trades ADD COLUMN original_sl REAL' },
+      { col: 'breakeven_moved', sql: 'ALTER TABLE trades ADD COLUMN breakeven_moved INTEGER DEFAULT 0' },
+      { col: 'level_price', sql: 'ALTER TABLE trades ADD COLUMN level_price REAL' },
+      { col: 'level_classification', sql: 'ALTER TABLE trades ADD COLUMN level_classification TEXT' },
+      { col: 'level_strength', sql: 'ALTER TABLE trades ADD COLUMN level_strength INTEGER' },
+      { col: 'entry_pattern', sql: 'ALTER TABLE trades ADD COLUMN entry_pattern TEXT' },
+      { col: 'entry_reason', sql: 'ALTER TABLE trades ADD COLUMN entry_reason TEXT' },
+      { col: 'exit_reason', sql: 'ALTER TABLE trades ADD COLUMN exit_reason TEXT' },
+      { col: 'duration', sql: 'ALTER TABLE trades ADD COLUMN duration TEXT' },
+      { col: 'opened_at', sql: 'ALTER TABLE trades ADD COLUMN opened_at TEXT' },
+    ];
+
+    for (const m of migrations) {
+      if (!columns.includes(m.col)) {
+        try {
+          this.db.exec(m.sql);
+          logger.info(`TradeStore migration: added column '${m.col}'`);
+        } catch (err) {
+          logger.warn(`TradeStore migration '${m.col}': ${err.message}`);
+        }
+      }
+    }
   }
 
   saveTrade(trade) {
