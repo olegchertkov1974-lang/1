@@ -141,6 +141,8 @@ class TelegramNotifier {
       await this._cmdPause();
     } else if (cmd === '/resume') {
       await this._cmdResume();
+    } else if (cmd === '/watch' || cmd === '/5m') {
+      await this._cmdWatch5m();
     }
   }
 
@@ -170,6 +172,8 @@ class TelegramNotifier {
       await this._cmdLogs();
     } else if (data === 'settings') {
       await this._cmdSettings();
+    } else if (data === 'watch_5m') {
+      await this._cmdWatch5m();
     } else if (data === 'refresh_levels') {
       await this._cmdRefreshLevels();
     } else if (data === 'close_all') {
@@ -226,7 +230,10 @@ class TelegramNotifier {
           { text: '▶️ Продолжить', callback_data: 'resume' },
         ],
         [
-          { text: '🔍 Сканировать', callback_data: 'force_scan' },
+          { text: '🔍 5m ожидание', callback_data: 'watch_5m' },
+          { text: '⚡ Сканировать', callback_data: 'force_scan' },
+        ],
+        [
           { text: '🔴 Закрыть все', callback_data: 'close_all' },
         ],
         [
@@ -607,6 +614,130 @@ class TelegramNotifier {
       await this._sendWithKeyboard(trimmed, { inline_keyboard: [[{ text: '◀️ Меню', callback_data: 'menu' }]] });
     } catch (err) {
       await this.sendMessage(`📝 <b>Логи недоступны</b>\n${err.message}`);
+    }
+  }
+
+  /**
+   * Показать пары, которые ждут паттерн на 5m у уровня.
+   * Парсит последние строки лога и извлекает "нет паттерна" и "в зоне".
+   */
+  async _cmdWatch5m() {
+    if (!this._bot) return;
+    try {
+      const fs = require('fs');
+      const path = require('path');
+      const logPath = path.resolve(__dirname, '..', 'logs', 'trading-bot.log');
+
+      if (!fs.existsSync(logPath)) {
+        await this.sendMessage('🔍 <b>Лог не найден</b>');
+        return;
+      }
+
+      // Читаем последние 500 строк для поиска актуального 5m скана
+      const content = fs.readFileSync(logPath, 'utf8');
+      const allLines = content.split('\n').filter(Boolean);
+      const recent = allLines.slice(-500);
+
+      // Ищем последний "5m скан" и собираем все "нет паттерна" + "в зоне" после него
+      let scanStart = -1;
+      for (let i = recent.length - 1; i >= 0; i--) {
+        if (recent[i].includes('Сканирование 5m')) {
+          scanStart = i;
+          break;
+        }
+      }
+
+      if (scanStart === -1) {
+        await this.sendMessage('🔍 <b>5m скан ещё не запускался</b>');
+        return;
+      }
+
+      // Извлекаем время последнего скана
+      const scanTimeMatch = recent[scanStart].match(/T(\d{2}:\d{2})/);
+      const scanTime = scanTimeMatch ? scanTimeMatch[1] : '?';
+
+      const watching = []; // пары в зоне, ждут паттерн
+      const inZone = [];   // пары в зоне с деталями
+
+      for (let i = scanStart + 1; i < recent.length; i++) {
+        const line = recent[i];
+
+        // "PAIR: уровень X в зоне! 4H тренд: Y, подход: Z, направление: W"
+        if (line.includes('в зоне!')) {
+          const pairMatch = line.match(/\]\s+(\w+\/\w+):/);
+          const levelMatch = line.match(/уровень ([\d.]+)/);
+          const trendMatch = line.match(/4H тренд: (\w+)/);
+          const approachMatch = line.match(/подход: (\w+)/);
+          const dirMatch = line.match(/направление: (\w+)/);
+
+          if (pairMatch) {
+            inZone.push({
+              pair: pairMatch[1],
+              level: levelMatch ? levelMatch[1] : '?',
+              trend: trendMatch ? trendMatch[1] : '?',
+              approach: approachMatch ? approachMatch[1] : '?',
+              dir: dirMatch ? dirMatch[1] : '?',
+            });
+          }
+        }
+
+        // "PAIR: нет паттерна на 5m у уровня X (direction) — ожидание"
+        if (line.includes('нет паттерна')) {
+          const pairMatch = line.match(/\]\s+(\w+\/\w+):/);
+          const levelMatch = line.match(/уровня ([\d.]+)/);
+          const dirMatch = line.match(/\((long|short)\)/);
+
+          if (pairMatch) {
+            watching.push({
+              pair: pairMatch[1],
+              level: levelMatch ? levelMatch[1] : '?',
+              dir: dirMatch ? dirMatch[1] : '?',
+            });
+          }
+        }
+
+        // "PAIR: СИГНАЛ ..."
+        if (line.includes('СИГНАЛ')) {
+          const pairMatch = line.match(/\]\s+(\w+\/\w+):/);
+          const dirMatch = line.match(/СИГНАЛ (\w+)/);
+          if (pairMatch) {
+            watching.push({
+              pair: pairMatch[1],
+              level: '—',
+              dir: dirMatch ? dirMatch[1].toLowerCase() : '?',
+              signal: true,
+            });
+          }
+        }
+      }
+
+      if (watching.length === 0 && inZone.length === 0) {
+        await this._sendWithKeyboard(
+          `🔍 <b>5m ожидание</b> (скан ${scanTime} UTC)\n\nНет пар в зоне уровней`,
+          { inline_keyboard: [[{ text: '🔄 Обновить', callback_data: 'watch_5m' }, { text: '◀️ Меню', callback_data: 'menu' }]] }
+        );
+        return;
+      }
+
+      let msg = `🔍 <b>5m ожидание</b> (скан ${scanTime} UTC)\n`;
+      msg += `Пар в зоне: <b>${watching.length}</b>\n\n`;
+
+      for (const w of watching) {
+        const icon = w.signal ? '🎯' : (w.dir === 'long' ? '🟢' : '🔴');
+        const dirRu = w.dir === 'long' ? 'ЛОНГ' : 'ШОРТ';
+        const status = w.signal ? '<b>СИГНАЛ!</b>' : 'ждёт паттерн';
+        msg += `${icon} <b>${w.pair}</b> ${dirRu} у ${w.level} — ${status}\n`;
+      }
+
+      const trimmed = msg.length > 4000 ? msg.slice(0, 4000) + '...' : msg;
+      await this._sendWithKeyboard(trimmed, {
+        inline_keyboard: [[
+          { text: '🔄 Обновить', callback_data: 'watch_5m' },
+          { text: '◀️ Меню', callback_data: 'menu' },
+        ]],
+      });
+    } catch (err) {
+      await this.sendMessage(`🔍 <b>Ошибка</b>\n${err.message}`);
     }
   }
 
