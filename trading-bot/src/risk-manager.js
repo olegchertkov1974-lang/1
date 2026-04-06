@@ -37,8 +37,18 @@ class RiskManager {
     if (riskPerUnit <= 0) throw new Error('Entry and stop-loss are equal');
 
     const size = riskAmount / riskPerUnit;
+
+    // Защита: нотионал не должен превышать баланс × макс плечо
+    const MAX_LEVERAGE = parseInt(process.env.LEVERAGE, 10) || 10;
+    const notional = size * entry;
+    const maxNotional = balance * MAX_LEVERAGE;
+    let finalSize = size;
+    if (notional > maxNotional) {
+      finalSize = maxNotional / entry;
+    }
+
     return {
-      size: parseFloat(size.toFixed(6)),
+      size: parseFloat(finalSize.toFixed(6)),
       riskAmount: parseFloat(riskAmount.toFixed(2)),
       riskPerUnit: parseFloat(riskPerUnit.toFixed(8)),
       riskPct: this.riskPct,

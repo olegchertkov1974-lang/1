@@ -1508,8 +1508,9 @@ class TradingBot {
     }
 
     // ── Размер позиции ──
+    // ВАЖНО: используем balance.total (equity), НЕ balance.free (с учётом плеча)
     const sizing = this.riskManager.calculatePositionSize(
-      balance.free,
+      balance.total,
       entrySignal.entry,
       entrySignal.stopLoss
     );
