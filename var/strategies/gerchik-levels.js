@@ -16,6 +16,7 @@ const LEVEL_ZONE_PCT = 0.4;          // % ширина зоны уровня (BT
 const MIN_RR_RATIO = 3;              // минимальное R:R
 const TICK_BUFFER = 3;               // тиков буфер для SL
 const ENTRY_OFFSET_TICKS = 2;        // тиков отступ для лимитки
+const MIN_SL_PCT = 0.5;             // минимальная дистанция SL в % от entry (защита от слишком узких стопов)
 const MAX_LEVEL_TOUCHES = 4;         // макс касаний — дальше уровень изношен
 const ROUND_NUMBER_THRESHOLD = 1000; // для крипто: 60000, 65000 etc
 
@@ -599,18 +600,39 @@ class GerchikLevels {
       entry = (level.zoneHigh || level.price) - tick * ENTRY_OFFSET_TICKS;
     }
 
-    // Используем цену из паттерна как альтернативу если ближе к рынку
-    if (direction === 'long' && pattern.entry > entry) entry = pattern.entry;
-    if (direction === 'short' && pattern.entry < entry) entry = pattern.entry;
+    // Используем цену из паттерна как альтернативу если ближе к рынку,
+    // НО только если SL-дистанция остаётся >= MIN_SL_PCT
+    if (direction === 'long' && pattern.entry > entry) {
+      const newSlDist = (pattern.entry - stopLoss) / pattern.entry;
+      if (newSlDist >= MIN_SL_PCT / 100) {
+        entry = pattern.entry;
+      }
+      // иначе оставляем entry от зоны — SL будет шире
+    }
+    if (direction === 'short' && pattern.entry < entry) {
+      const newSlDist = (stopLoss - pattern.entry) / pattern.entry;
+      if (newSlDist >= MIN_SL_PCT / 100) {
+        entry = pattern.entry;
+      }
+    }
 
     // Защита: SL должен быть на правильной стороне от entry
     if (direction === 'long' && stopLoss >= entry) {
-      // SL выше entry для лонга — невалидный сигнал
       return null;
     }
     if (direction === 'short' && stopLoss <= entry) {
-      // SL ниже entry для шорта — невалидный сигнал
       return null;
+    }
+
+    // Защита: минимальная дистанция SL (MIN_SL_PCT)
+    const slDistPct = Math.abs(entry - stopLoss) / entry * 100;
+    if (slDistPct < MIN_SL_PCT) {
+      // Раздвигаем SL до минимума
+      if (direction === 'long') {
+        stopLoss = entry * (1 - MIN_SL_PCT / 100);
+      } else {
+        stopLoss = entry * (1 + MIN_SL_PCT / 100);
+      }
     }
 
     // TP: на следующем дневном уровне

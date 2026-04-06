@@ -139,11 +139,10 @@ class BybitExchange {
         params.timeInForce = 'PostOnly';
       }
 
-      // SL/TP прикрепляем к ордеру как fallback (основной путь — setTradingStop после fill)
-      // SL всегда Stop Market — гарантия исполнения
-      if (stopLoss) params.stopLoss = { triggerPrice: stopLoss, type: 'market' };
-      // TP — тоже ставим сразу, Bybit сам сделает limit
-      if (takeProfit) params.takeProfit = { triggerPrice: takeProfit, type: 'limit' };
+      // SL/TP НЕ прикрепляем к ордеру — ставим ТОЛЬКО через setTradingStop() после fill.
+      // Причина: attached SL активируется мгновенно при fill и конфликтует
+      // с последующим setTradingStop(), вызывая "закрытие через 1 минуту".
+      // (stopLoss и takeProfit параметры передаются, но не используются в ордере)
 
       const orderType = limitPrice ? 'limit' : 'market';
       const price = limitPrice || undefined;

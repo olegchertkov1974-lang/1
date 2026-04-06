@@ -260,6 +260,14 @@ class TradingBot {
    */
   async _onOrderFilled(orderId, pending, order) {
     this._pendingOrders.delete(orderId);
+
+    // Захватываем реальную цену fill (может отличаться от запланированной)
+    const fillPrice = order.average || order.price || pending.position.entry;
+    if (fillPrice && fillPrice !== pending.position.entry) {
+      logger.info(`${pending.pair}: реальный fill ${fillPrice} (план: ${pending.position.entry})`);
+      pending.position.entry = fillPrice;
+    }
+
     this.positions.set(pending.pair, pending.position);
     this.riskManager.addPosition(pending.position);
 
@@ -422,6 +430,14 @@ class TradingBot {
         // === ИСПОЛНЕН ===
         if (order.status === 'closed') {
           this._pendingOrders.delete(orderId);
+
+          // Захватываем реальную цену fill
+          const fillPrice = order.average || order.price || pending.position.entry;
+          if (fillPrice && fillPrice !== pending.position.entry) {
+            logger.info(`${pending.pair}: реальный fill ${fillPrice} (план: ${pending.position.entry})`);
+            pending.position.entry = fillPrice;
+          }
+
           this.positions.set(pending.pair, pending.position);
           this.riskManager.addPosition(pending.position);
 
@@ -632,8 +648,36 @@ class TradingBot {
         let pnlEstimate = 0;
 
         try {
-          const ticker = await this.exchange.fetchTicker(pair);
-          exitPrice = ticker.last || ticker.close || 0;
+          // Пробуем получить РЕАЛЬНУЮ цену закрытия из execution history
+          let gotRealPrice = false;
+          try {
+            const executions = await this.exchange.fetchExecutions(
+              new Date(Date.now() - 10 * 60 * 1000).toISOString(), // последние 10 минут
+              new Date().toISOString()
+            );
+            const rawSymbol = pair.replace('/', '');
+            const closeSide = pos.side === 'long' ? 'Sell' : 'Buy';
+            // Ищем исполнение закрытия (reduceOnly) по нашей паре
+            const closeExecs = executions.filter(e =>
+              e.symbol === rawSymbol && e.side === closeSide && e.execQty > 0
+            );
+            if (closeExecs.length > 0) {
+              // Берём последнее исполнение — это цена закрытия
+              const lastExec = closeExecs[closeExecs.length - 1];
+              exitPrice = lastExec.execPrice;
+              gotRealPrice = true;
+              logger.info(`${pair}: реальная цена закрытия из executions: ${exitPrice}`);
+            }
+          } catch (execErr) {
+            logger.warn(`${pair}: не удалось получить executions: ${execErr.message}`);
+          }
+
+          // Fallback на ticker если executions не дали результат
+          if (!gotRealPrice) {
+            const ticker = await this.exchange.fetchTicker(pair);
+            exitPrice = ticker.last || ticker.close || 0;
+            logger.info(`${pair}: цена закрытия из ticker (fallback): ${exitPrice}`);
+          }
 
           if (pos.side === 'long') {
             pnlEstimate = (exitPrice - pos.entry) * pos.size;
