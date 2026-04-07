@@ -287,6 +287,22 @@ class TelegramNotifier {
       const paused = this._bot.paused;
       const stats = this._bot.tradeStore.getStats();
 
+      // Нереализованный PnL открытых позиций
+      let unrealizedPnl = 0;
+      for (const [pair, pos] of this._bot.positions) {
+        try {
+          const ticker = await this._bot.exchange.fetchTicker(pair);
+          const price = ticker.last || ticker.close || 0;
+          if (pos.side === 'long') {
+            unrealizedPnl += (price - pos.entry) * pos.size;
+          } else {
+            unrealizedPnl += (pos.entry - price) * pos.size;
+          }
+        } catch (e) { /* skip */ }
+      }
+
+      const realizedPnl = stats.total_pnl || 0;
+      const totalPnl = realizedPnl + unrealizedPnl;
       const usedMargin = (balance.total - balance.free).toFixed(2);
       const msg =
         `📊 <b>Статус бота</b>\n\n` +
@@ -297,7 +313,9 @@ class TelegramNotifier {
         `Открытых позиций: ${posCount}\n` +
         `Всего сделок: ${stats.total || 0}\n` +
         `Побед/Поражений: ${stats.wins || 0}/${stats.losses || 0}\n` +
-        `PnL: <code>${(stats.total_pnl || 0).toFixed(2)} USDT</code>`;
+        `PnL реализ.: <code>${realizedPnl.toFixed(2)} USDT</code>\n` +
+        (posCount > 0 ? `PnL нереализ.: <code>${unrealizedPnl.toFixed(2)} USDT</code>\n` : '') +
+        `PnL итого: <code>${totalPnl.toFixed(2)} USDT</code>`;
 
       const keyboard = {
         inline_keyboard: [
@@ -331,11 +349,30 @@ class TelegramNotifier {
     for (const [key, pos] of positions) {
       const icon = pos.side === 'long' ? '🟢' : '🔴';
       const sideRu = pos.side === 'long' ? 'ЛОНГ' : 'ШОРТ';
+
+      // Текущая цена и нереализованный PnL
+      let priceStr = '?';
+      let pnlStr = '?';
+      try {
+        const ticker = await this._bot.exchange.fetchTicker(key);
+        const price = ticker.last || ticker.close || 0;
+        priceStr = String(price);
+        const pnl = pos.side === 'long'
+          ? (price - pos.entry) * pos.size
+          : (pos.entry - price) * pos.size;
+        const pnlIcon = pnl >= 0 ? '💰' : '💸';
+        pnlStr = `${pnlIcon} ${pnl.toFixed(2)} USDT`;
+      } catch (e) { /* skip */ }
+
       msg +=
         `${icon} <b>${sideRu}</b> ${key}\n` +
         `  Вход: <code>${pos.entry}</code>\n` +
+        `  Цена: <code>${priceStr}</code>\n` +
         `  SL: <code>${pos.stopLoss}</code> | TP: <code>${pos.takeProfit}</code>\n` +
-        `  Размер: <code>${pos.size}</code>\n\n`;
+        `  Размер: <code>${pos.size}</code>\n` +
+        `  PnL: <code>${pnlStr}</code>\n` +
+        (pos._breakevenMoved ? `  🔒 Безубыток\n` : '') +
+        `\n`;
 
       buttons.push([{ text: `❌ Закрыть ${key}`, callback_data: `close_${key}` }]);
     }
