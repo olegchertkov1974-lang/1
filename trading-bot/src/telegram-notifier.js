@@ -313,6 +313,7 @@ class TelegramNotifier {
         `Открытых позиций: ${posCount}\n` +
         `Всего сделок: ${stats.total || 0}\n` +
         `Побед/Поражений: ${stats.wins || 0}/${stats.losses || 0}\n` +
+        (stats.total > 0 ? `TP1: ${stats.tp1_hits || 0} | TP2: ${stats.tp2_hits || 0} | TP3: ${stats.tp3_hits || 0}\n` : '') +
         `PnL реализ.: <code>${realizedPnl.toFixed(2)} USDT</code>\n` +
         (posCount > 0 ? `PnL нереализ.: <code>${unrealizedPnl.toFixed(2)} USDT</code>\n` : '') +
         `PnL итого: <code>${totalPnl.toFixed(2)} USDT</code>`;
@@ -368,7 +369,8 @@ class TelegramNotifier {
         `${icon} <b>${sideRu}</b> ${key}\n` +
         `  Вход: <code>${pos.entry}</code>\n` +
         `  Цена: <code>${priceStr}</code>\n` +
-        `  SL: <code>${pos.stopLoss}</code> | TP: <code>${pos.takeProfit}</code>\n` +
+        `  SL: <code>${pos.stopLoss}</code>\n` +
+        `  TP1: <code>${pos.tp1 || '?'}</code> ${pos._tp1Hit ? '✅' : '⏳'} | TP2: <code>${pos.tp2 || '?'}</code> ${pos._tp2Hit ? '✅' : '⏳'} | TP3: <code>${pos.tp3 || '?'}</code> ${pos._tp3Hit ? '✅' : '⏳'}\n` +
         `  Размер: <code>${pos.size}</code>\n` +
         `  PnL: <code>${pnlStr}</code>\n` +
         (pos._breakevenMoved ? `  🔒 Безубыток\n` : '') +
@@ -924,7 +926,9 @@ class TelegramNotifier {
       `Тип: <b>${typeRu}</b>\n` +
       `Вход: <code>${signal.entry}</code>\n` +
       `SL: <code>${signal.stopLoss}</code>\n` +
-      `TP: <code>${signal.takeProfit}</code>\n` +
+      `TP1 (1R, 30%): <code>${signal.tp1 || signal.takeProfit}</code>\n` +
+      `TP2 (2R, 40%): <code>${signal.tp2 || signal.takeProfit}</code>\n` +
+      `TP3 (3R, 30%): <code>${signal.tp3 || signal.takeProfit}</code>\n` +
       `Размер: <code>${signal.positionSize}</code>\n` +
       `Риск: <code>${signal.riskPct}% ($${signal.riskAmount || '?'})</code>\n` +
       `R:R: <code>1:${signal.riskRewardRatio}</code>\n` +

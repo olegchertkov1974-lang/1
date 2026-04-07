@@ -352,18 +352,42 @@ class TradingBot {
         // Определяем, был ли SL перенесён в безубыток
         const isBreakeven = stopLossPrice > 0 && Math.abs(stopLossPrice - entryPrice) / entryPrice < 0.001;
 
+        // Для синхронизированных позиций восстанавливаем TP уровни из risk
+        const syncRisk = stopLossPrice > 0 ? Math.abs(entryPrice - stopLossPrice) : 0;
+        let syncTp1 = 0, syncTp2 = 0, syncTp3 = takeProfitPrice;
+        if (syncRisk > 0) {
+          if (side === 'long') {
+            syncTp1 = entryPrice + syncRisk * 1;
+            syncTp2 = entryPrice + syncRisk * 2;
+            syncTp3 = entryPrice + syncRisk * 3;
+          } else {
+            syncTp1 = entryPrice - syncRisk * 1;
+            syncTp2 = entryPrice - syncRisk * 2;
+            syncTp3 = entryPrice - syncRisk * 3;
+          }
+        }
+
         const position = {
           id: posKey,
           side,
           entry: entryPrice,
           stopLoss: stopLossPrice,
-          takeProfit: takeProfitPrice,
-          _originalSL: stopLossPrice, // при синхронизации оригинальный SL неизвестен
+          takeProfit: takeProfitPrice || syncTp3,
+          tp1: syncTp1,
+          tp2: syncTp2,
+          tp3: syncTp3 || takeProfitPrice,
+          _tp1Hit: isBreakeven, // если безубыток — скорее всего TP1 уже был
+          _tp2Hit: false,
+          _tp3Hit: false,
+          _originalSize: size,
+          _originalSL: stopLossPrice,
           size,
           orderId: 'synced',
           entryReason: 'Синхронизирована с биржи после рестарта',
           openedAt: pos.timestamp ? new Date(pos.timestamp).toISOString() : new Date().toISOString(),
           _breakevenMoved: isBreakeven,
+          _partialPnl: 0,
+          _partialCloses: [],
         };
 
         this.positions.set(posKey, position);
@@ -679,11 +703,13 @@ class TradingBot {
             logger.info(`${pair}: цена закрытия из ticker (fallback): ${exitPrice}`);
           }
 
+          // PnL остатка + PnL от частичных закрытий (TP1, TP2)
           if (pos.side === 'long') {
             pnlEstimate = (exitPrice - pos.entry) * pos.size;
           } else {
             pnlEstimate = (pos.entry - exitPrice) * pos.size;
           }
+          pnlEstimate += (pos._partialPnl || 0);
 
           // Определяем тип закрытия
           if (pos.side === 'long') {
@@ -728,14 +754,19 @@ class TradingBot {
         const sideRu = pos.side === 'long' ? 'ЛОНГ' : 'ШОРТ';
         const closeIcon = closeType === 'tp' ? '✅' : closeType === 'breakeven' ? '🔒' : closeType === 'sl' ? '🛑' : '⬜';
 
+        // Информация о частичных закрытиях
+        const partials = pos._partialCloses || [];
+        const partialsStr = partials.length > 0
+          ? partials.map(p => `${p.tp}: ${p.size} по ${p.price} (${p.pnl > 0 ? '+' : ''}${p.pnl})`).join(' | ')
+          : 'нет';
+
         logger.info(
           `СДЕЛКА ЗАКРЫТА ${pair} ${sideRu} | ` +
           `результат: ${closeType} | PnL: ${pnlEstimate.toFixed(2)} USDT (${realizedRR}R) | ` +
           `вход: ${pos.entry} | выход: ${exitPrice} | ` +
-          `SL: ${pos.stopLoss} | TP: ${pos.takeProfit} | ` +
-          `размер: ${pos.size} | длительность: ${durationStr} | ` +
-          `безубыток: ${pos._breakevenMoved ? 'да' : 'нет'} | ` +
-          `причина входа: ${pos.entryReason || '—'} | ` +
+          `SL: ${pos.stopLoss} | TP1: ${pos.tp1} TP2: ${pos.tp2} TP3: ${pos.tp3} | ` +
+          `размер: ${pos.size}/${pos._originalSize || pos.size} | длительность: ${durationStr} | ` +
+          `частичные: ${partialsStr} | ` +
           `причина закрытия: ${closeReason}`
         );
 
@@ -743,17 +774,24 @@ class TradingBot {
         const sideIcon = pos.side === 'long' ? '🟢' : '🔴';
         const pnlIcon = pnlEstimate > 0 ? '💰' : pnlEstimate < 0 ? '💸' : '🔒';
 
+        let partialsMsg = '';
+        if (partials.length > 0) {
+          partialsMsg = '\n<b>Частичные закрытия:</b>\n' +
+            partials.map(p => `  ${p.tp}: <code>${p.size}</code> по <code>${p.price}</code> (${p.pnl > 0 ? '+' : ''}${p.pnl} USDT)`).join('\n') +
+            '\n';
+        }
+
         const msg =
           `${closeIcon} <b>Позиция закрыта</b>\n` +
           `━━━━━━━━━━━━━━━━━━\n` +
           `${sideIcon} <b>${sideRu}</b> ${pair}\n\n` +
           `Вход: <code>${pos.entry}</code>\n` +
           `Выход: <code>${exitPrice || '?'}</code>\n` +
-          `SL: <code>${pos.stopLoss}</code> | TP: <code>${pos.takeProfit}</code>\n` +
-          `Размер: <code>${pos.size}</code>\n\n` +
-          `${pnlIcon} PnL: <code>${pnlEstimate.toFixed(2)} USDT (${realizedRR}R)</code>\n` +
-          `Длительность: ${durationStr}\n` +
-          `Безубыток: ${pos._breakevenMoved ? 'Да (SL был перенесён)' : 'Нет'}\n\n` +
+          `TP1: <code>${pos.tp1}</code> ${pos._tp1Hit ? '✅' : '❌'} | TP2: <code>${pos.tp2}</code> ${pos._tp2Hit ? '✅' : '❌'} | TP3: <code>${pos.tp3}</code> ${pos._tp3Hit ? '✅' : '❌'}\n` +
+          `Размер: <code>${pos.size}/${pos._originalSize || pos.size}</code>\n` +
+          partialsMsg +
+          `\n${pnlIcon} PnL итого: <code>${pnlEstimate.toFixed(2)} USDT (${realizedRR}R)</code>\n` +
+          `Длительность: ${durationStr}\n\n` +
           `Причина: ${closeReason}`;
 
         await this.notifier.sendMessage(msg);
@@ -769,11 +807,15 @@ class TradingBot {
           stopLoss: pos.stopLoss,
           takeProfit: pos.takeProfit,
           originalSL: pos._originalSL || pos.stopLoss,
-          size: pos.size,
+          size: pos._originalSize || pos.size,
           pnl: parseFloat(pnlEstimate.toFixed(2)),
           realizedRR: realizedRR,
           closeType: closeType,
           breakevenMoved: !!pos._breakevenMoved,
+          tp1Hit: !!pos._tp1Hit,
+          tp2Hit: !!pos._tp2Hit,
+          tp3Hit: !!pos._tp3Hit,
+          partialCloses: JSON.stringify(pos._partialCloses || []),
           levelPrice: pos._levelPrice || null,
           levelClassification: pos._levelClassification || null,
           levelStrength: pos._levelStrength || null,
@@ -1133,9 +1175,9 @@ class TradingBot {
     // Детекция закрытых позиций (SL/TP на бирже)
     await this._detectClosedPositions();
 
-    // Безубыток — каждую минуту если есть позиции
-    if (BREAKEVEN_ENABLED && this.positions.size > 0) {
-      await this._checkBreakeven();
+    // Тейк-профиты (TP1/TP2/TP3) и безубыток — каждую минуту если есть позиции
+    if (this.positions.size > 0) {
+      await this._checkTakeProfitLevels();
       this._lastBreakevenCheck = now;
     }
 
@@ -1379,92 +1421,147 @@ class TradingBot {
   }
 
   /**
-   * Перенос SL в безубыток после прохождения 1R в прибыль.
-   *
-   * Герчик: после прохождения 1R — SL на уровень входа.
-   * Дальнейший трейлинг НЕ применяется.
-   * Позиция закрывается ТОЛЬКО по тейку или по стопу в безубытке.
+   * Мониторинг трёх уровней тейк-профита:
+   *   TP1 (1R) — закрываем 30%, SL → безубыток
+   *   TP2 (2R) — закрываем 40%
+   *   TP3 (3R) — закрываем оставшиеся 30% (или SL на бирже)
    */
-  async _checkBreakeven() {
+  async _checkTakeProfitLevels() {
     for (const [pair, pos] of this.positions) {
-      if (pos._breakevenMoved) continue; // уже перенесён
-
       try {
         const ticker = await this.exchange.fetchTicker(pair);
         const currentPrice = ticker.last || ticker.close;
         if (!currentPrice) continue;
 
-        const risk = Math.abs(pos.entry - pos.stopLoss);
+        const risk = Math.abs(pos.entry - (pos._originalSL || pos.stopLoss));
         if (risk <= 0) continue;
+
+        const profit = pos.side === 'long'
+          ? currentPrice - pos.entry
+          : pos.entry - currentPrice;
+        const profitR = profit / risk;
 
         const sideRu = pos.side === 'long' ? 'ЛОНГ' : 'ШОРТ';
         const sideIcon = pos.side === 'long' ? '🟢' : '🔴';
-        const oldSL = pos.stopLoss;
 
-        let profit = 0;
-        if (pos.side === 'long') {
-          profit = currentPrice - pos.entry;
-        } else {
-          profit = pos.entry - currentPrice;
+        // ── TP1: 1R — закрываем 30%, SL → безубыток ──
+        if (!pos._tp1Hit && pos.tp1) {
+          const tp1Hit = pos.side === 'long'
+            ? currentPrice >= pos.tp1
+            : currentPrice <= pos.tp1;
+
+          if (tp1Hit) {
+            const closeSize = parseFloat((pos._originalSize * 0.3).toFixed(6));
+            if (closeSize > 0) {
+              try {
+                const closeOrder = await this.exchange.closePartial(pair, pos.side, closeSize, 'TP1 (1R, 30%)');
+                const closePrice = closeOrder.average || currentPrice;
+                const partialPnl = pos.side === 'long'
+                  ? (closePrice - pos.entry) * closeSize
+                  : (pos.entry - closePrice) * closeSize;
+
+                pos._tp1Hit = true;
+                pos.size = parseFloat((pos.size - closeSize).toFixed(6));
+                pos._partialPnl += partialPnl;
+                pos._partialCloses.push({
+                  tp: 'TP1', size: closeSize, price: closePrice,
+                  pnl: parseFloat(partialPnl.toFixed(2)), time: new Date().toISOString(),
+                });
+
+                // SL → безубыток
+                const oldSL = pos.stopLoss;
+                const breakevenSL = pos.entry;
+                try {
+                  await this.exchange.setTradingStop(pair, {
+                    stopLoss: breakevenSL,
+                    takeProfit: pos.tp3, // TP3 на бирже как финальный стоп
+                  });
+                  pos.stopLoss = breakevenSL;
+                  pos._breakevenMoved = true;
+                } catch (slErr) {
+                  logger.warn(`${pair}: TP1 hit, но SL в безубыток не удался: ${slErr.message}`);
+                }
+
+                logger.info(
+                  `TP1 HIT ${pair} ${sideRu}: закрыто 30% (${closeSize}) по ${closePrice} | ` +
+                  `PnL=${partialPnl.toFixed(2)} | SL ${oldSL}→${pos.entry} | остаток=${pos.size}`
+                );
+
+                await this.notifier.sendMessage(
+                  `🎯 <b>TP1 достигнут (1R)</b>\n` +
+                  `${sideIcon} <b>${sideRu}</b> ${pair}\n` +
+                  `━━━━━━━━━━━━━━━━━━\n` +
+                  `Закрыто: <code>30% (${closeSize})</code> по <code>${closePrice}</code>\n` +
+                  `PnL: <code>${partialPnl.toFixed(2)} USDT</code>\n` +
+                  `🔒 SL → безубыток: <code>${pos.entry}</code>\n` +
+                  `Остаток: <code>${pos.size}</code>\n` +
+                  `Следующий: TP2 (2R) = <code>${pos.tp2}</code>`
+                );
+              } catch (err) {
+                logger.error(`${pair}: TP1 частичное закрытие ошибка: ${err.message}`);
+              }
+            }
+          }
         }
 
-        const profitR = profit / risk; // сколько R пройдено
+        // ── TP2: 2R — закрываем 40% ──
+        if (pos._tp1Hit && !pos._tp2Hit && pos.tp2) {
+          const tp2Hit = pos.side === 'long'
+            ? currentPrice >= pos.tp2
+            : currentPrice <= pos.tp2;
 
-        if (profit >= risk) {
-          // 1R достигнут — переносим SL в безубыток
-          // Доп. проверка: SL должен быть на правильной стороне от текущей цены
-          if (pos.side === 'long' && pos.entry >= currentPrice) {
-            logger.debug(`${pair}: 1R был достигнут, но цена вернулась (${currentPrice} < entry ${pos.entry}) — ждём`);
-            continue;
+          if (tp2Hit) {
+            const closeSize = parseFloat((pos._originalSize * 0.4).toFixed(6));
+            const actualClose = Math.min(closeSize, pos.size);
+            if (actualClose > 0) {
+              try {
+                const closeOrder = await this.exchange.closePartial(pair, pos.side, actualClose, 'TP2 (2R, 40%)');
+                const closePrice = closeOrder.average || currentPrice;
+                const partialPnl = pos.side === 'long'
+                  ? (closePrice - pos.entry) * actualClose
+                  : (pos.entry - closePrice) * actualClose;
+
+                pos._tp2Hit = true;
+                pos.size = parseFloat((pos.size - actualClose).toFixed(6));
+                pos._partialPnl += partialPnl;
+                pos._partialCloses.push({
+                  tp: 'TP2', size: actualClose, price: closePrice,
+                  pnl: parseFloat(partialPnl.toFixed(2)), time: new Date().toISOString(),
+                });
+
+                // Обновляем SL/TP на бирже для остатка
+                try {
+                  await this.exchange.setTradingStop(pair, {
+                    stopLoss: pos.stopLoss,
+                    takeProfit: pos.tp3,
+                  });
+                } catch (e) { /* ok */ }
+
+                logger.info(
+                  `TP2 HIT ${pair} ${sideRu}: закрыто 40% (${actualClose}) по ${closePrice} | ` +
+                  `PnL=${partialPnl.toFixed(2)} | остаток=${pos.size}`
+                );
+
+                await this.notifier.sendMessage(
+                  `🎯🎯 <b>TP2 достигнут (2R)</b>\n` +
+                  `${sideIcon} <b>${sideRu}</b> ${pair}\n` +
+                  `━━━━━━━━━━━━━━━━━━\n` +
+                  `Закрыто: <code>40% (${actualClose})</code> по <code>${closePrice}</code>\n` +
+                  `PnL: <code>${partialPnl.toFixed(2)} USDT</code>\n` +
+                  `Остаток: <code>${pos.size}</code>\n` +
+                  `Следующий: TP3 (3R) = <code>${pos.tp3}</code>`
+                );
+              } catch (err) {
+                logger.error(`${pair}: TP2 частичное закрытие ошибка: ${err.message}`);
+              }
+            }
           }
-          if (pos.side === 'short' && pos.entry <= currentPrice) {
-            logger.debug(`${pair}: 1R был достигнут, но цена вернулась (${currentPrice} > entry ${pos.entry}) — ждём`);
-            continue;
-          }
-
-          // Сначала пробуем обновить на бирже (передаём entry как новый SL + текущий TP)
-          // ВАЖНО: Bybit сбрасывает TP если не передать его вместе с SL
-          const breakevenSL = pos.entry;
-          try {
-            const tpOpts = { stopLoss: breakevenSL };
-            if (pos.takeProfit) tpOpts.takeProfit = pos.takeProfit;
-            await this.exchange.setTradingStop(pair, tpOpts);
-          } catch (err) {
-            logger.warn(`${pair}: не удалось перенести SL в безубыток: ${err.message} — повторим позже`);
-            continue; // не ставим флаг, попробуем в следующем цикле
-          }
-
-          pos.stopLoss = breakevenSL;
-          pos._breakevenMoved = true;
-          pos._breakevenMovedAt = new Date().toISOString();
-
-          const logMsg =
-            `БЕЗУБЫТОК ${pair} ${sideRu}: 1R достигнут | ` +
-            `цена=${currentPrice} | вход=${pos.entry} | ` +
-            `profit=${profit.toFixed(2)} (${profitR.toFixed(1)}R) | ` +
-            `SL ${oldSL} → ${pos.entry} | TP=${pos.takeProfit}`;
-          logger.info(logMsg);
-
-          await this.notifier.sendMessage(
-            `🔒 <b>Безубыток</b>\n` +
-            `${sideIcon} <b>${sideRu}</b> ${pair}\n` +
-            `━━━━━━━━━━━━━━━━━━\n` +
-            `Цена сейчас: <code>${currentPrice}</code>\n` +
-            `Вход: <code>${pos.entry}</code>\n` +
-            `Прибыль: <code>${profit.toFixed(2)} (${profitR.toFixed(1)}R)</code>\n` +
-            `SL: <code>${oldSL}</code> → <code>${pos.entry}</code>\n` +
-            `TP: <code>${pos.takeProfit}</code>\n\n` +
-            `Позиция защищена — стоп на уровне входа`
-          );
-
-          await this.webhook.pushToN8n('breakeven_moved', {
-            pair, side: pos.side, entry: pos.entry,
-            currentPrice, profit: profit.toFixed(2), profitR: profitR.toFixed(1),
-            oldSL, newSL: pos.entry,
-          });
         }
+
+        // TP3 обрабатывается биржей через SL/TP (setTradingStop) или _detectClosedPositions
+
       } catch (err) {
-        logger.error(`_checkBreakeven ${pair}: ${err.message}`);
+        logger.error(`_checkTakeProfitLevels ${pair}: ${err.message}`);
       }
     }
   }
@@ -1478,14 +1575,15 @@ class TradingBot {
    */
   async _setPositionStopLossAndTakeProfit(pair, pos) {
     try {
+      // На бирже ставим SL + TP3 (финальный тейк). TP1 и TP2 обрабатываются ботом.
+      const tp = pos.tp3 || pos.takeProfit;
       await this.exchange.setTradingStop(pair, {
         stopLoss: pos.stopLoss,
-        takeProfit: pos.takeProfit,
+        takeProfit: tp,
       });
-      logger.info(`${pair}: SL=${pos.stopLoss} (Stop Market) TP=${pos.takeProfit} (Limit) установлены`);
+      logger.info(`${pair}: SL=${pos.stopLoss} TP3=${tp} установлены | TP1=${pos.tp1} TP2=${pos.tp2}`);
     } catch (err) {
-      // SL/TP могут уже быть установлены через attached параметры ордера — не критично
-      logger.warn(`${pair}: ошибка setTradingStop: ${err.message} (SL/TP могут быть уже установлены)`);
+      logger.warn(`${pair}: ошибка setTradingStop: ${err.message}`);
     }
   }
 
@@ -1499,9 +1597,10 @@ class TradingBot {
     try {
       // ВАЖНО: Bybit сбрасывает TP если не передать его вместе с SL
       const opts = { stopLoss: pos.stopLoss };
-      if (pos.takeProfit) opts.takeProfit = pos.takeProfit;
+      const tp = pos.tp3 || pos.takeProfit;
+      if (tp) opts.takeProfit = tp;
       await this.exchange.setTradingStop(pair, opts);
-      logger.info(`${pair}: SL обновлён на ${pos.stopLoss} (безубыток) через setTradingStop`);
+      logger.info(`${pair}: SL обновлён на ${pos.stopLoss} через setTradingStop`);
     } catch (err) {
       logger.warn(`${pair}: не удалось обновить SL на бирже: ${err.message}`);
     }
@@ -1599,7 +1698,7 @@ class TradingBot {
       `ОРДЕР ${pair} ${entrySignal.signal.toUpperCase()} | ` +
       `паттерн: ${entrySignal.typeRu} | ` +
       `уровень: ${levelData ? `${levelData.price.toFixed(2)} (${levelData.classification}, сила ${levelData.strength})` : '?'} | ` +
-      `entry: ${entrySignal.entry} | SL: ${entrySignal.stopLoss} (Stop Market) | TP: ${entrySignal.takeProfit} (Limit) | ` +
+      `entry: ${entrySignal.entry} | SL: ${entrySignal.stopLoss} | TP1: ${entrySignal.tp1} TP2: ${entrySignal.tp2} TP3: ${entrySignal.tp3} | ` +
       `R:R: 1:${entrySignal.riskRewardRatio} | ` +
       `размер: ${sizing.size} | риск: ${sizing.riskAmount} USDT (${sizing.riskPct}%) | ` +
       `PostOnly: да | 4H тренд: ${entrySignal._4hTrend || '?'} | подход: ${entrySignal._4hApproach || '?'}` +
@@ -1624,8 +1723,15 @@ class TradingBot {
         side: entrySignal.signal,
         entry: entrySignal.entry,
         stopLoss: entrySignal.stopLoss,
-        takeProfit: entrySignal.takeProfit,
-        _originalSL: entrySignal.stopLoss, // оригинальный SL (до безубытка)
+        takeProfit: entrySignal.takeProfit, // = TP3 для совместимости
+        tp1: entrySignal.tp1 || entrySignal.takeProfit,
+        tp2: entrySignal.tp2 || entrySignal.takeProfit,
+        tp3: entrySignal.tp3 || entrySignal.takeProfit,
+        _tp1Hit: false,  // TP1 достигнут — закрыто 30%, SL → безубыток
+        _tp2Hit: false,  // TP2 достигнут — закрыто 40%
+        _tp3Hit: false,  // TP3 достигнут — закрыто 30% (или SL на бирже)
+        _originalSize: sizing.size, // начальный размер позиции
+        _originalSL: entrySignal.stopLoss,
         size: sizing.size,
         orderId: result.id,
         entryReason: entrySignal.reason,
@@ -1636,6 +1742,9 @@ class TradingBot {
         _levelClassification: levelData ? levelData.classification : null,
         _levelStrength: levelData ? levelData.strength : null,
         _entryPattern: entrySignal.type || null,
+        // PnL от частичных закрытий
+        _partialPnl: 0,
+        _partialCloses: [], // [{tp, size, price, pnl, time}]
       };
 
       // Limit ордер — ждём исполнения
@@ -1660,7 +1769,8 @@ class TradingBot {
           `${entrySignal.signal === 'long' ? '🟢' : '🔴'} <b>${sideRu}</b> ${pair}\n` +
           `━━━━━━━━━━━━━━━━━━\n` +
           `Цена: <code>${entrySignal.entry}</code>\n` +
-          `SL: <code>${entrySignal.stopLoss}</code> | TP: <code>${entrySignal.takeProfit}</code>\n` +
+          `SL: <code>${entrySignal.stopLoss}</code>\n` +
+          `TP1 (1R, 30%): <code>${entrySignal.tp1}</code> | TP2 (2R, 40%): <code>${entrySignal.tp2}</code> | TP3 (3R, 30%): <code>${entrySignal.tp3}</code>\n` +
           `R:R: <code>1:${entrySignal.riskRewardRatio}</code>\n` +
           `Размер: <code>${sizing.size}</code> | Риск: <code>${sizing.riskAmount} USDT</code>\n\n` +
           `📐 Уровень: ${levelInfo ? `${levelInfo.price.toFixed(2)} (${this.strategy._classificationRu(levelInfo.classification)}, сила ${levelInfo.strength})` : entrySignal.level}\n` +

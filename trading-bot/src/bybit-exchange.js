@@ -237,6 +237,27 @@ class BybitExchange {
   }
 
   /**
+   * Частичное закрытие позиции рыночным ордером.
+   * @param {string} pair — торговая пара
+   * @param {string} side — 'long' или 'short'
+   * @param {number} amount — объём для закрытия (часть позиции)
+   * @param {string} reason — причина частичного закрытия (для лога)
+   */
+  async closePartial(pair, side, amount, reason = '') {
+    this.validatePair(pair);
+    const closeSide = side === 'long' ? 'sell' : 'buy';
+
+    return this._retry(async () => {
+      logger.info(`Частичное закрытие ${side} ${pair}: объём=${amount} (${reason})`);
+      const order = await this.exchange.createOrder(this._toLinear(pair), 'market', closeSide, amount, undefined, {
+        reduceOnly: true,
+      });
+      logger.info(`Частичное закрытие OK: ${order.id} avg=${order.average || '?'}`);
+      return order;
+    }, `closePartial(${pair})`);
+  }
+
+  /**
    * Отменить открытый ордер.
    */
   async cancelOrder(orderId, pair) {

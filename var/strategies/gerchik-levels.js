@@ -635,32 +635,49 @@ class GerchikLevels {
       }
     }
 
-    // TP: на следующем дневном уровне
-    let takeProfit = null;
-    if (allDailyLevels && allDailyLevels.length > 0) {
-      takeProfit = this._findNextLevel(entry, direction, allDailyLevels);
-    }
-
-    // Fallback: если нет следующего уровня — математический TP
+    // TP: три уровня тейк-профита (1R, 2R, 3R)
     const risk = Math.abs(entry - stopLoss);
-    if (!takeProfit) {
-      takeProfit = direction === 'long'
-        ? entry + risk * MIN_RR_RATIO
-        : entry - risk * MIN_RR_RATIO;
+
+    let tp1, tp2, tp3;
+    if (direction === 'long') {
+      tp1 = entry + risk * 1;  // 1R — 30%, безубыток
+      tp2 = entry + risk * 2;  // 2R — 40%
+      tp3 = entry + risk * 3;  // 3R — 30%
+    } else {
+      tp1 = entry - risk * 1;
+      tp2 = entry - risk * 2;
+      tp3 = entry - risk * 3;
     }
 
-    // Проверка R:R
-    const reward = Math.abs(takeProfit - entry);
+    // Если есть ближайший дневной уровень — используем как TP3 (если дальше 3R)
+    let nextLevel = null;
+    if (allDailyLevels && allDailyLevels.length > 0) {
+      nextLevel = this._findNextLevel(entry, direction, allDailyLevels);
+    }
+    // Если дневной уровень находится между TP2 и TP3 — ставим TP3 на него
+    if (nextLevel) {
+      const nextLevelDist = Math.abs(nextLevel - entry);
+      if (nextLevelDist > risk * 2 && nextLevelDist < risk * 3) {
+        tp3 = nextLevel;
+      }
+    }
+
+    // Проверка R:R (минимум 3R до TP3)
+    const reward = Math.abs(tp3 - entry);
     const rr = risk > 0 ? reward / risk : 0;
     if (rr < MIN_RR_RATIO) return null; // R:R недостаточный — пропускаем
 
+    // takeProfit = tp3 для обратной совместимости (setTradingStop на бирже)
     return {
       signal: direction,
       type: pattern.type,
       typeRu: pattern.typeRu,
       entry: parseFloat(entry.toFixed(8)),
       stopLoss: parseFloat(stopLoss.toFixed(8)),
-      takeProfit: parseFloat(takeProfit.toFixed(8)),
+      takeProfit: parseFloat(tp3.toFixed(8)),
+      tp1: parseFloat(tp1.toFixed(8)),
+      tp2: parseFloat(tp2.toFixed(8)),
+      tp3: parseFloat(tp3.toFixed(8)),
       level: level.price,
       levelClassification: level.classification,
       levelStrength: level.strength,

@@ -75,20 +75,22 @@ class RiskManager {
 
     if (!order.entry || order.entry <= 0) errors.push('Нет цены входа');
     if (!order.stopLoss || order.stopLoss <= 0) errors.push('Нет стоп-лосса');
-    if (!order.takeProfit || order.takeProfit <= 0) errors.push('Нет тейк-профита');
+    // TP3 (финальный) или takeProfit для обратной совместимости
+    const tp = order.tp3 || order.takeProfit;
+    if (!tp || tp <= 0) errors.push('Нет тейк-профита');
     if (!order.size || order.size <= 0) errors.push('Нет размера позиции');
 
     if (order.side === 'long') {
       if (order.stopLoss >= order.entry) errors.push('SL должен быть ниже входа для лонга');
-      if (order.takeProfit <= order.entry) errors.push('TP должен быть выше входа для лонга');
+      if (tp && tp <= order.entry) errors.push('TP должен быть выше входа для лонга');
     } else if (order.side === 'short') {
       if (order.stopLoss <= order.entry) errors.push('SL должен быть выше входа для шорта');
-      if (order.takeProfit >= order.entry) errors.push('TP должен быть ниже входа для шорта');
+      if (tp && tp >= order.entry) errors.push('TP должен быть ниже входа для шорта');
     }
 
-    // Проверка R:R
+    // Проверка R:R (по TP3)
     const risk = Math.abs(order.entry - order.stopLoss);
-    const reward = Math.abs(order.takeProfit - order.entry);
+    const reward = Math.abs((tp || 0) - order.entry);
     if (risk > 0 && reward / risk < this.minRR) {
       errors.push(`R:R ${(reward / risk).toFixed(2)} ниже минимума ${this.minRR}`);
     }

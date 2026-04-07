@@ -92,6 +92,10 @@ class TradeStore {
       { col: 'opened_at', sql: 'ALTER TABLE trades ADD COLUMN opened_at TEXT' },
       { col: 'realized_rr', sql: 'ALTER TABLE trades ADD COLUMN realized_rr TEXT' },
       { col: 'close_type', sql: 'ALTER TABLE trades ADD COLUMN close_type TEXT' },
+      { col: 'tp1_hit', sql: 'ALTER TABLE trades ADD COLUMN tp1_hit INTEGER DEFAULT 0' },
+      { col: 'tp2_hit', sql: 'ALTER TABLE trades ADD COLUMN tp2_hit INTEGER DEFAULT 0' },
+      { col: 'tp3_hit', sql: 'ALTER TABLE trades ADD COLUMN tp3_hit INTEGER DEFAULT 0' },
+      { col: 'partial_closes', sql: 'ALTER TABLE trades ADD COLUMN partial_closes TEXT' },
     ];
 
     for (const m of migrations) {
@@ -116,9 +120,10 @@ class TradeStore {
       const stmt = this.db.prepare(`
         INSERT INTO trades (pair, timeframe, side, entry, exit_price, stop_loss,
           take_profit, original_sl, size, pnl, realized_rr, close_type, breakeven_moved,
+          tp1_hit, tp2_hit, tp3_hit, partial_closes,
           level_price, level_classification, level_strength, entry_pattern,
           entry_reason, exit_reason, duration, opened_at, closed_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `);
       stmt.run(
         trade.pair, trade.timeframe, trade.side, trade.entry,
@@ -127,6 +132,8 @@ class TradeStore {
         trade.size, trade.pnl,
         trade.realizedRR || null, trade.closeType || null,
         trade.breakevenMoved ? 1 : 0,
+        trade.tp1Hit ? 1 : 0, trade.tp2Hit ? 1 : 0, trade.tp3Hit ? 1 : 0,
+        trade.partialCloses || null,
         trade.levelPrice || null, trade.levelClassification || null,
         trade.levelStrength || null, trade.entryPattern || null,
         trade.entryReason, trade.exitReason, trade.duration,
@@ -175,7 +182,10 @@ class TradeStore {
         SUM(CASE WHEN pnl > 0 THEN 1 ELSE 0 END) as wins,
         SUM(CASE WHEN pnl <= 0 THEN 1 ELSE 0 END) as losses,
         COALESCE(SUM(pnl), 0) as total_pnl,
-        COALESCE(AVG(pnl), 0) as avg_pnl
+        COALESCE(AVG(pnl), 0) as avg_pnl,
+        SUM(CASE WHEN tp1_hit = 1 THEN 1 ELSE 0 END) as tp1_hits,
+        SUM(CASE WHEN tp2_hit = 1 THEN 1 ELSE 0 END) as tp2_hits,
+        SUM(CASE WHEN tp3_hit = 1 THEN 1 ELSE 0 END) as tp3_hits
       FROM trades
     `).get();
     return row;
