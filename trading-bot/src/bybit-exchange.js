@@ -237,19 +237,86 @@ class BybitExchange {
   }
 
   /**
+   * Получить минимальный лот и шаг для пары из lotSizeFilter.
+   * Кэширует результат, чтобы не дёргать API каждый раз.
+   * @returns {{ minQty: number, stepSize: number }}
+   */
+  async _getLotSize(pair) {
+    if (!this._lotSizeCache) this._lotSizeCache = new Map();
+
+    if (this._lotSizeCache.has(pair)) return this._lotSizeCache.get(pair);
+
+    try {
+      await this.exchange.loadMarkets();
+      const symbol = this._toLinear(pair);
+      const market = this.exchange.market(symbol);
+      const minQty = market.limits?.amount?.min || 0;
+      const stepSize = market.precision?.amount
+        ? Math.pow(10, -market.precision.amount)
+        : 0.001;
+
+      const result = { minQty, stepSize };
+      this._lotSizeCache.set(pair, result);
+      logger.info(`LotSize ${pair}: minQty=${minQty} stepSize=${stepSize}`);
+      return result;
+    } catch (err) {
+      logger.warn(`_getLotSize(${pair}): ${err.message}, fallback minQty=0`);
+      return { minQty: 0, stepSize: 0.001 };
+    }
+  }
+
+  /**
+   * Округлить объём вниз до ближайшего шага (stepSize).
+   */
+  _roundToStep(amount, stepSize) {
+    if (!stepSize || stepSize <= 0) return amount;
+    return Math.floor(amount / stepSize) * stepSize;
+  }
+
+  /**
    * Частичное закрытие позиции рыночным ордером.
+   * Проверяет minQty: если объём меньше минимума — округляет вверх;
+   * если минимум больше остатка — закрывает всю позицию.
+   *
    * @param {string} pair — торговая пара
    * @param {string} side — 'long' или 'short'
    * @param {number} amount — объём для закрытия (часть позиции)
    * @param {string} reason — причина частичного закрытия (для лога)
+   * @param {number} [remainingSize] — текущий остаток позиции (для проверки)
    */
-  async closePartial(pair, side, amount, reason = '') {
+  async closePartial(pair, side, amount, reason = '', remainingSize = 0) {
     this.validatePair(pair);
     const closeSide = side === 'long' ? 'sell' : 'buy';
 
     return this._retry(async () => {
-      logger.info(`Частичное закрытие ${side} ${pair}: объём=${amount} (${reason})`);
-      const order = await this.exchange.createOrder(this._toLinear(pair), 'market', closeSide, amount, undefined, {
+      let finalAmount = amount;
+
+      // Проверяем минимальный лот
+      const { minQty, stepSize } = await this._getLotSize(pair);
+
+      if (minQty > 0 && finalAmount < minQty) {
+        const remaining = remainingSize || finalAmount;
+        if (minQty >= remaining) {
+          // Минимальный лот >= остатка — закрываем всё
+          finalAmount = remaining;
+          logger.info(`Скорректирован объём ${pair}: ${amount} → ${finalAmount} (minQty ${minQty} >= остаток, закрытие всей позиции)`);
+        } else {
+          // Округляем вверх до минимума
+          finalAmount = minQty;
+          logger.info(`Скорректирован объём ${pair}: ${amount} → ${finalAmount} (меньше minQty ${minQty})`);
+        }
+      }
+
+      // Округляем до stepSize
+      finalAmount = this._roundToStep(finalAmount, stepSize);
+      if (finalAmount <= 0) finalAmount = minQty || amount;
+
+      if (finalAmount !== amount) {
+        logger.info(`Скорректирован объём ${pair}: ${amount} → ${finalAmount}`);
+      }
+
+      logger.info(`Частичное закрытие ${side} ${pair}: объём=${finalAmount} (${reason})`);
+      const order = await this.exchange.createOrder(this._toLinear(pair), 'market', closeSide, finalAmount, undefined, {
         reduceOnly: true,
       });
       logger.info(`Частичное закрытие OK: ${order.id} avg=${order.average || '?'}`);

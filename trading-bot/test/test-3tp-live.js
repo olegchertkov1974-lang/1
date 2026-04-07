@@ -160,7 +160,7 @@ async function monitorTPs() {
           logger.info(`TEST 3TP TP1 HIT ${pair}: price=${price} tp1=${pos.tp1} close=${closeSize}`);
 
           try {
-            await exchange.closePartial(pair, 'long', closeSize, 'TEST TP1');
+            await exchange.closePartial(pair, 'long', closeSize, 'TEST TP1', pos.size);
             pos._tp1Hit = true;
             pos.size = parseFloat((pos.size - closeSize).toFixed(6));
 
@@ -185,7 +185,7 @@ async function monitorTPs() {
           logger.info(`TEST 3TP TP2 HIT ${pair}: price=${price} tp2=${pos.tp2} close=${actualClose}`);
 
           try {
-            await exchange.closePartial(pair, 'long', actualClose, 'TEST TP2');
+            await exchange.closePartial(pair, 'long', actualClose, 'TEST TP2', pos.size);
             pos._tp2Hit = true;
             pos.size = parseFloat((pos.size - actualClose).toFixed(6));
 

@@ -1454,7 +1454,7 @@ class TradingBot {
             const closeSize = parseFloat((pos._originalSize * 0.3).toFixed(6));
             if (closeSize > 0) {
               try {
-                const closeOrder = await this.exchange.closePartial(pair, pos.side, closeSize, 'TP1 (1R, 30%)');
+                const closeOrder = await this.exchange.closePartial(pair, pos.side, closeSize, 'TP1 (1R, 30%)', pos.size);
                 const closePrice = closeOrder.average || currentPrice;
                 const partialPnl = pos.side === 'long'
                   ? (closePrice - pos.entry) * closeSize
@@ -1515,7 +1515,7 @@ class TradingBot {
             const actualClose = Math.min(closeSize, pos.size);
             if (actualClose > 0) {
               try {
-                const closeOrder = await this.exchange.closePartial(pair, pos.side, actualClose, 'TP2 (2R, 40%)');
+                const closeOrder = await this.exchange.closePartial(pair, pos.side, actualClose, 'TP2 (2R, 40%)', pos.size);
                 const closePrice = closeOrder.average || currentPrice;
                 const partialPnl = pos.side === 'long'
                   ? (closePrice - pos.entry) * actualClose
