@@ -1,0 +1,198 @@
+{
+  "name": "Trading Bot - News Sentiment",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 30
+            }
+          ]
+        }
+      },
+      "id": "schedule-2",
+      "name": "Every 30 min",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [250, 300]
+    },
+    {
+      "parameters": {
+        "url": "https://cointelegraph.com/rss",
+        "options": {}
+      },
+      "id": "rss-1",
+      "name": "Crypto News RSS",
+      "type": "n8n-nodes-base.rssFeedRead",
+      "typeVersion": 1,
+      "position": [470, 300]
+    },
+    {
+      "parameters": {
+        "maxItems": 10
+      },
+      "id": "limit-1",
+      "name": "Last 10 News",
+      "type": "n8n-nodes-base.limit",
+      "typeVersion": 1,
+      "position": [640, 300]
+    },
+    {
+      "parameters": {
+        "aggregate": "aggregateAllItemData",
+        "options": {}
+      },
+      "id": "aggregate-1",
+      "name": "Combine Headlines",
+      "type": "n8n-nodes-base.aggregate",
+      "typeVersion": 1,
+      "position": [810, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://openrouter.ai/api/v1/chat/completions",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"model\": \"anthropic/claude-sonnet-4-20250514\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Analyze these crypto news headlines for market sentiment. Respond ONLY with valid JSON: {\\\"sentiment\\\": \\\"bullish\\\" or \\\"bearish\\\" or \\\"neutral\\\", \\\"score\\\": -100 to 100, \\\"summary\\\": \\\"1 sentence in Russian\\\", \\\"pause_trading\\\": true/false}\\n\\nHeadlines:\\n{{ $json.data.map(item => item.title).join('\\\\n') }}\"\n    }\n  ],\n  \"max_tokens\": 200,\n  \"temperature\": 0.1\n}",
+        "options": {}
+      },
+      "id": "openrouter-2",
+      "name": "AI Sentiment",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1000, 300],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "REPLACE_WITH_CREDENTIAL_ID",
+          "name": "OpenRouter API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const content = $input.first().json.choices[0].message.content;\nconst match = content.match(/\\{[\\s\\S]*\\}/);\nconst result = match ? JSON.parse(match[0]) : { sentiment: 'neutral', score: 0, pause_trading: false };\nreturn [{ json: result }];"
+      },
+      "id": "parse-1",
+      "name": "Parse AI Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1200, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true },
+          "conditions": [
+            {
+              "leftValue": "={{ $json.pause_trading }}",
+              "rightValue": true,
+              "operator": { "type": "boolean", "operation": "true" }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "if-pause",
+      "name": "Should Pause?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [1400, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://127.0.0.1:3001/command",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "x-webhook-secret",
+              "value": "={{ $env.WEBHOOK_SECRET }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "{\"command\": \"pause\"}",
+        "options": {}
+      },
+      "id": "pause-bot",
+      "name": "Pause Bot",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1620, 240]
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $env.TELEGRAM_CHAT_ID }}",
+        "text": "=⚠️ <b>НЕГАТИВНЫЕ НОВОСТИ</b>\n\nСентимент: {{ $node['Parse AI Response'].json.sentiment }}\nСкор: {{ $node['Parse AI Response'].json.score }}/100\n{{ $node['Parse AI Response'].json.summary }}\n\n🛑 <b>Бот поставлен на паузу</b>",
+        "additionalFields": {
+          "parse_mode": "HTML"
+        }
+      },
+      "id": "tg-pause",
+      "name": "TG: Paused",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [1840, 240],
+      "credentials": {
+        "telegramApi": {
+          "id": "REPLACE_WITH_CREDENTIAL_ID",
+          "name": "Telegram Bot"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Every 30 min": {
+      "main": [
+        [{ "node": "Crypto News RSS", "type": "main", "index": 0 }]
+      ]
+    },
+    "Crypto News RSS": {
+      "main": [
+        [{ "node": "Last 10 News", "type": "main", "index": 0 }]
+      ]
+    },
+    "Last 10 News": {
+      "main": [
+        [{ "node": "Combine Headlines", "type": "main", "index": 0 }]
+      ]
+    },
+    "Combine Headlines": {
+      "main": [
+        [{ "node": "AI Sentiment", "type": "main", "index": 0 }]
+      ]
+    },
+    "AI Sentiment": {
+      "main": [
+        [{ "node": "Parse AI Response", "type": "main", "index": 0 }]
+      ]
+    },
+    "Parse AI Response": {
+      "main": [
+        [{ "node": "Should Pause?", "type": "main", "index": 0 }]
+      ]
+    },
+    "Should Pause?": {
+      "main": [
+        [{ "node": "Pause Bot", "type": "main", "index": 0 }],
+        []
+      ]
+    },
+    "Pause Bot": {
+      "main": [
+        [{ "node": "TG: Paused", "type": "main", "index": 0 }]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "tags": [{ "name": "trading-bot" }]
+}

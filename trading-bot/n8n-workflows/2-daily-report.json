@@ -1,0 +1,126 @@
+{
+  "name": "Trading Bot - Daily Report",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "triggerAtHour": 20,
+              "triggerAtMinute": 0
+            }
+          ]
+        }
+      },
+      "id": "schedule-1",
+      "name": "Daily at 20:00",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [250, 300]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "http://127.0.0.1:3001/status",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "x-webhook-secret",
+              "value": "={{ $env.WEBHOOK_SECRET }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "get-status",
+      "name": "Get Bot Status",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [470, 240]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "http://127.0.0.1:3001/stats",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "x-webhook-secret",
+              "value": "={{ $env.WEBHOOK_SECRET }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "get-stats",
+      "name": "Get Trade Stats",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [470, 420]
+    },
+    {
+      "parameters": {
+        "mode": "combine",
+        "mergeByFields": {},
+        "combinationMode": "mergeByPosition",
+        "options": {}
+      },
+      "id": "merge-1",
+      "name": "Merge Data",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3,
+      "position": [700, 330]
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $env.TELEGRAM_CHAT_ID }}",
+        "text": "=📊 <b>ЕЖЕДНЕВНЫЙ ОТЧЁТ</b>\n\n💰 Баланс: <code>{{ $json.balance ? $json.balance.total : '?' }} USDT</code>\nСвободно: <code>{{ $json.balance ? $json.balance.free : '?' }} USDT</code>\n\n📈 Статистика:\nВсего сделок: {{ $json.total || 0 }}\nПобеды: {{ $json.wins || 0 }}\nПоражения: {{ $json.losses || 0 }}\nОбщий PnL: <code>{{ $json.total_pnl || 0 }} USDT</code>\n\n⏱ Аптайм: {{ Math.round(($json.uptime || 0) / 3600) }}ч\nОткрытых позиций: {{ $json.positions || 0 }}",
+        "additionalFields": {
+          "parse_mode": "HTML"
+        }
+      },
+      "id": "tg-report",
+      "name": "TG: Daily Report",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [920, 330],
+      "credentials": {
+        "telegramApi": {
+          "id": "REPLACE_WITH_CREDENTIAL_ID",
+          "name": "Telegram Bot"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Daily at 20:00": {
+      "main": [
+        [
+          { "node": "Get Bot Status", "type": "main", "index": 0 },
+          { "node": "Get Trade Stats", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Get Bot Status": {
+      "main": [
+        [{ "node": "Merge Data", "type": "main", "index": 0 }]
+      ]
+    },
+    "Get Trade Stats": {
+      "main": [
+        [{ "node": "Merge Data", "type": "main", "index": 1 }]
+      ]
+    },
+    "Merge Data": {
+      "main": [
+        [{ "node": "TG: Daily Report", "type": "main", "index": 0 }]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "tags": [{ "name": "trading-bot" }]
+}

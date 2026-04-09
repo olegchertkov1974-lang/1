@@ -1,0 +1,263 @@
+{
+  "name": "Trading Bot - Signal Filter",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "trading-bot",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "webhook-1",
+      "name": "Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [250, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true },
+          "conditions": [
+            {
+              "leftValue": "={{ $json.event }}",
+              "rightValue": "signal_pending",
+              "operator": { "type": "string", "operation": "equals" }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "if-signal",
+      "name": "Is Signal?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [470, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true },
+          "conditions": [
+            {
+              "leftValue": "={{ $json.event }}",
+              "rightValue": "trade_opened",
+              "operator": { "type": "string", "operation": "equals" }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "if-trade",
+      "name": "Is Trade Opened?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [470, 520]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true },
+          "conditions": [
+            {
+              "leftValue": "={{ $json.event }}",
+              "rightValue": "trade_closed",
+              "operator": { "type": "string", "operation": "equals" }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "if-closed",
+      "name": "Is Trade Closed?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [470, 740]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true },
+          "conditions": [
+            {
+              "leftValue": "={{ $json.event }}",
+              "rightValue": "error",
+              "operator": { "type": "string", "operation": "equals" }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "if-error",
+      "name": "Is Error?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [470, 960]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://openrouter.ai/api/v1/chat/completions",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"model\": \"anthropic/claude-sonnet-4-20250514\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"You are a crypto trading analyst. A trading bot found this signal:\\n\\nSignal: {{ $json.data.signal.signal }} {{ $json.data.signal.type }}\\nPair: {{ $json.data.signal.pair }}\\nEntry: {{ $json.data.signal.entry }}\\nSL: {{ $json.data.signal.stopLoss }}\\nTP: {{ $json.data.signal.takeProfit }}\\nReason: {{ $json.data.signal.reason }}\\n\\nAI bot analysis: {{ $json.data.aiResult ? $json.data.aiResult.reason : 'N/A' }}\\nAI confidence: {{ $json.data.aiResult ? $json.data.aiResult.confidence : 'N/A' }}%\\n\\nLevels: {{ JSON.stringify($json.data.levels) }}\\n\\nGive a brief 2-3 sentence assessment. Should this trade be taken? Reply in Russian.\"\n    }\n  ],\n  \"max_tokens\": 300,\n  \"temperature\": 0.1\n}",
+        "options": {}
+      },
+      "id": "openrouter-1",
+      "name": "AI Analysis",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [700, 300],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "REPLACE_WITH_CREDENTIAL_ID",
+          "name": "OpenRouter API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $env.TELEGRAM_CHAT_ID }}",
+        "text": "=🔔 <b>НОВЫЙ СИГНАЛ</b>\n\n{{ $json.data.signal.signal === 'long' ? '🟢' : '🔴' }} <b>{{ $json.data.signal.signal.toUpperCase() }}</b> {{ $json.data.signal.type }}\nПара: <code>{{ $json.data.signal.pair }}</code>\nВход: <code>{{ $json.data.signal.entry }}</code>\nSL: <code>{{ $json.data.signal.stopLoss }}</code>\nTP: <code>{{ $json.data.signal.takeProfit }}</code>\nR:R: <code>1:{{ $json.data.signal.riskRewardRatio }}</code>\n\n🤖 <b>AI оценка:</b>\n{{ $node['AI Analysis'].json.choices[0].message.content }}",
+        "additionalFields": {
+          "parse_mode": "HTML"
+        }
+      },
+      "id": "tg-signal",
+      "name": "TG: Signal",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [920, 300],
+      "credentials": {
+        "telegramApi": {
+          "id": "REPLACE_WITH_CREDENTIAL_ID",
+          "name": "Telegram Bot"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $env.TELEGRAM_CHAT_ID }}",
+        "text": "=✅ <b>СДЕЛКА ОТКРЫТА</b>\n\n{{ $json.data.side === 'long' ? '🟢' : '🔴' }} {{ $json.data.side.toUpperCase() }} <code>{{ $json.data.id }}</code>\nВход: <code>{{ $json.data.entry }}</code>\nSL: <code>{{ $json.data.stopLoss }}</code>\nTP: <code>{{ $json.data.takeProfit }}</code>\nРазмер: <code>{{ $json.data.size }}</code>",
+        "additionalFields": {
+          "parse_mode": "HTML"
+        }
+      },
+      "id": "tg-trade-open",
+      "name": "TG: Trade Opened",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [700, 520],
+      "credentials": {
+        "telegramApi": {
+          "id": "REPLACE_WITH_CREDENTIAL_ID",
+          "name": "Telegram Bot"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $env.TELEGRAM_CHAT_ID }}",
+        "text": "={{ $json.data.pnl > 0 ? '💰' : '📉' }} <b>СДЕЛКА ЗАКРЫТА</b>\n\nПара: <code>{{ $json.data.pair }}</code>\nСторона: {{ $json.data.side }}\nPnL: <code>{{ $json.data.pnl }} USDT</code>\nПричина: {{ $json.data.exitReason }}\nДлительность: {{ $json.data.duration }}",
+        "additionalFields": {
+          "parse_mode": "HTML"
+        }
+      },
+      "id": "tg-trade-close",
+      "name": "TG: Trade Closed",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [700, 740],
+      "credentials": {
+        "telegramApi": {
+          "id": "REPLACE_WITH_CREDENTIAL_ID",
+          "name": "Telegram Bot"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $env.TELEGRAM_CHAT_ID }}",
+        "text": "=⚠️ <b>ОШИБКА БОТА</b>\n\n<code>{{ $json.data.message }}</code>",
+        "additionalFields": {
+          "parse_mode": "HTML"
+        }
+      },
+      "id": "tg-error",
+      "name": "TG: Error",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [700, 960],
+      "credentials": {
+        "telegramApi": {
+          "id": "REPLACE_WITH_CREDENTIAL_ID",
+          "name": "Telegram Bot"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={\"ok\": true}",
+        "options": {}
+      },
+      "id": "respond-1",
+      "name": "Respond OK",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [1140, 300]
+    }
+  ],
+  "connections": {
+    "Webhook": {
+      "main": [
+        [
+          { "node": "Is Signal?", "type": "main", "index": 0 },
+          { "node": "Is Trade Opened?", "type": "main", "index": 0 },
+          { "node": "Is Trade Closed?", "type": "main", "index": 0 },
+          { "node": "Is Error?", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Is Signal?": {
+      "main": [
+        [{ "node": "AI Analysis", "type": "main", "index": 0 }],
+        []
+      ]
+    },
+    "AI Analysis": {
+      "main": [
+        [{ "node": "TG: Signal", "type": "main", "index": 0 }]
+      ]
+    },
+    "TG: Signal": {
+      "main": [
+        [{ "node": "Respond OK", "type": "main", "index": 0 }]
+      ]
+    },
+    "Is Trade Opened?": {
+      "main": [
+        [{ "node": "TG: Trade Opened", "type": "main", "index": 0 }],
+        []
+      ]
+    },
+    "Is Trade Closed?": {
+      "main": [
+        [{ "node": "TG: Trade Closed", "type": "main", "index": 0 }],
+        []
+      ]
+    },
+    "Is Error?": {
+      "main": [
+        [{ "node": "TG: Error", "type": "main", "index": 0 }],
+        []
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "tags": [{ "name": "trading-bot" }]
+}
